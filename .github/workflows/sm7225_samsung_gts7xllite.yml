@@ -1,0 +1,27 @@
+name: SM7225 Samsung Galaxy Tab S7 FE 5G
+
+on:
+  push:
+    branches: [ "xyz/sm7225/gts7xllite" ]
+    paths:
+      - 'Platforms/KodiakPkg/Device/samsung-gts7xllite/**'
+  workflow_dispatch:
+
+env:
+  WM_CI_BUILD: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: xyz/sm7225/gts7xllite
+      - name: Build SB/NOSB uefi for Samsung Galaxy Tab S7 FE 5G.
+        run: bash scripts/ci_setup.sh && ./build_uefi.py -d samsung-gts7xllite
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: uefi-images-gts7xllite
+          path: Build/*/ci_artifacts
+          compression-level: 9
