@@ -229,6 +229,16 @@
         SECTION RAW = KodiakPkg/Device/$(TARGET_DEVICE)/Binaries/RawFiles/Panel_r66451_120hz_fhd_plus_dsc_cmd_cphy.xml
     }
 
+    FILE FREEFORM = 0608C554-C9A8-4A3A-801B-D9BDC581A285 {
+        SECTION UI = "Panel_ft8203_ts124qdm_wqxga_vid.xml"
+        SECTION RAW = KodiakPkg/Device/$(TARGET_DEVICE)/Binaries/RawFiles/Panel_ft8203_ts124qdm_wqxga_vid.xml
+    }
+
+    FILE FREEFORM = F61D53DF-E9C9-46C8-97E2-4E7C09A47766 {
+        SECTION UI = "Panel_hx83121_ppc357db11_wqxga_vid.xml"
+        SECTION RAW = KodiakPkg/Device/$(TARGET_DEVICE)/Binaries/RawFiles/Panel_hx83121_ppc357db11_wqxga_vid.xml
+    }
+
     FILE FREEFORM = 45FE4B7C-150C-45DA-A021-4BEB2048EC6F {
         SECTION UI = "QcomChargerCfg.cfg"
         SECTION RAW = KodiakPkg/Device/$(TARGET_DEVICE)/Binaries/RawFiles/QcomChargerCfg.cfg
