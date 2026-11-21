@@ -84,6 +84,7 @@ FindTeAddr(TE_INFO_STRUCT *TEInfo)
   }
 
 exitLoop:
+  DEBUG((DEBUG_ERROR, "T736B: TE scan done, TEBuffer=%p fileSize=0x%lX teSize=0x%lX\n", TEInfo->TEBuffer, (UINT64)TEInfo->fileSize, (UINT64)TEInfo->teSize));
   if (TEInfo->TEBuffer == 0) {
     DEBUG((DEBUG_ERROR, "XBLCore.te not found\n"));
     Status = EFI_NOT_FOUND;
@@ -907,8 +908,10 @@ VOID InitProtocolFinder(
 
   // Find Scheduler address
   if (NULL != ScheAddr) {
+    DEBUG((DEBUG_ERROR, "T736B: before sched scan, teSize=0x%lX\n", (UINT64)CoreTE.teSize));
     status =
         find_protocol_scheduler(&CoreTE, &gEfiSchedIntfGuid, &ScheIntrAddr);
+    DEBUG((DEBUG_ERROR, "T736B: after sched scan v1, addr=%p\n", (VOID*)ScheIntrAddr));
 
     if (!ScheIntrAddr) {
       // Try variant 2
