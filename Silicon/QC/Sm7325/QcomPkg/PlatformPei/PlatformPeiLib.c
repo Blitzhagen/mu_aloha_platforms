@@ -147,7 +147,9 @@ VOID InstallPlatformHob()
     UINTN InfoBlkAddress = InfoBlk.Address;
     UINTN ShLibAddress   = (UINTN)&ShLib;
 
+    DEBUG((DEBUG_ERROR, "T736B: before InitProtocolFinder\n"));
     InitProtocolFinder(&SchedIntfAddress, NULL);
+    DEBUG((DEBUG_ERROR, "T736B: after InitProtocolFinder, SchedIntfAddress=0x%lX\n", SchedIntfAddress));
 
     BuildMemHobForFv(EFI_HOB_TYPE_FV2);
     BuildGuidDataHob(

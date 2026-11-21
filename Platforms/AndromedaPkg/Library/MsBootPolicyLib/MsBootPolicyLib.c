@@ -185,6 +185,12 @@ MsBootPolicyLibIsSettingsBoot (
     }
   }
 
+// woa-t736b patch start: force FrontPage (BootManagerMenu) - volume buttons
+// are consumed by Samsung abl before UEFI runs, so SDAM checks never see them.
+// v43: disabled so BDS runs normal boot attempts (USB stick + internal ESP)
+//  BootToSetup = TRUE;
+// woa-t736b patch end
+
   return BootToSetup;
 }
 

@@ -304,6 +304,41 @@ static void mem_putchar(UINT8 c)
   WriteBackInvalidateDataCacheRange(base, size);
 }
 
+// Mirror all serial output into the kernel ramoops pmsg zone
+// (@0xB1BC0000, ram.c backend: persistent_ram_buffer{sig,start,size,data};
+//  zone order: dump@+0, console@+0x40000, ftrace@+0x80000, pmsg@+0xC0000;
+//  expected sig = 0 ^ PERSISTENT_RAM_SIG = 0x43474244)
+// so TWRP can read the UEFI log via /sys/fs/pstore/pmsg-ramoops-0.
+#define PMSG_PRZ_ADDR 0xB1BC0000ULL
+#define PMSG_PRZ_SIZE 0x00040000
+#define PMSG_PRZ_SIG  0x43474244
+
+static void pmsg_putchar(UINT8 c)
+{
+  volatile UINT32 *hdr  = (UINT32 *)PMSG_PRZ_ADDR;
+  UINT8 *          data = (UINT8 *)(PMSG_PRZ_ADDR + 12);
+  UINT32           pos;
+
+  pos = hdr[2];
+  if (hdr[0] != PMSG_PRZ_SIG || hdr[1] != 0 || pos >= PMSG_PRZ_SIZE - 12) {
+    hdr[1] = 0;
+    hdr[2] = 0;
+    hdr[0] = PMSG_PRZ_SIG;
+    for (UINT32 i = 0; i < PMSG_PRZ_SIZE - 12; i++) {
+      data[i] = 0;
+    }
+    pos = 0;
+  } else if (pos == 0) {
+    for (UINT32 i = 0; i < PMSG_PRZ_SIZE - 12; i++) {
+      data[i] = 0;
+    }
+  }
+  data[pos] = c;
+  hdr[2]    = pos + 1;
+
+  WriteBackInvalidateDataCacheRange((void *)PMSG_PRZ_ADDR, 16 + pos);
+}
+
 UINTN
 EFIAPI
 SerialPortWrite(IN UINT8 *Buffer, IN UINTN NumberOfBytes)
@@ -316,6 +351,7 @@ SerialPortWrite(IN UINT8 *Buffer, IN UINTN NumberOfBytes)
 
   for (UINTN i = 0; i < NumberOfBytes; i++) {
     mem_putchar(Buffer[i]);
+    pmsg_putchar(Buffer[i]);
   }
 
   while (Buffer < Final) {
@@ -340,6 +376,7 @@ SerialPortWriteCritical(IN UINT8 *Buffer, IN UINTN NumberOfBytes)
 
   for (UINTN i = 0; i < NumberOfBytes; i++) {
     mem_putchar(Buffer[i]);
+    pmsg_putchar(Buffer[i]);
   }
 
   m_Color.Foreground = FB_BGRA8888_YELLOW;

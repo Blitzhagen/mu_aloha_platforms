@@ -193,6 +193,7 @@ PrePiMain (
   // Initialize Platform HOBs (CpuHob and FvHob)
   Status = PlatformPeim ();
   ASSERT_EFI_ERROR (Status);
+  DEBUG((DEBUG_ERROR, "T736B: after PlatformPeim\n"));
 
   DxeSettings =
       (DXE_MEMORY_PROTECTION_SETTINGS)DXE_MEMORY_PROTECTION_SETTINGS_OFF;
@@ -236,10 +237,13 @@ PeiContinueBoot(VOID* ARGS)
     ArmWriteTpidrurw((UINTN)PeiServiceTablePtr);
 //
 /////////////////////////////////////////////
+  DEBUG((DEBUG_ERROR, "T736B: before DecompressFirstFv\n"));
   // Assume the FV that contains the SEC (our code) also contains a compressed FV.
   Status = DecompressFirstFv ();
   ASSERT_EFI_ERROR (Status);
+  DEBUG((DEBUG_ERROR, "T736B: after DecompressFirstFv\n"));
 
+  DEBUG((DEBUG_ERROR, "T736B: before LoadDxeCoreFromFv\n"));
   // Load the DXE Core and transfer control to it
   Status = LoadDxeCoreFromFv (NULL, 0);
   ASSERT_EFI_ERROR (Status);
