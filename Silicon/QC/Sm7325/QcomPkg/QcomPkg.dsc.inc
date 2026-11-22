@@ -14,8 +14,10 @@
 [PcdsFixedAtBuild.common]
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x80000000         # Starting address, 2GB Base
   gAndromedaPkgTokenSpaceGuid.PcdCpuVectorBaseAddress|0x9ff8c000
-  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum|29
-  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|30
+  gArmTokenSpaceGuid.PcdArmArchTimerSecIntrNum|17
+  gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|18
+  gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|19
+  gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum|16
   gArmTokenSpaceGuid.PcdGicDistributorBase|0x17a00000
   gArmTokenSpaceGuid.PcdGicRedistributorsBase|0x17a60000
 
