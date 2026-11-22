@@ -304,19 +304,26 @@ static void mem_putchar(UINT8 c)
   WriteBackInvalidateDataCacheRange(base, size);
 }
 
-// Mirror all serial output into the kernel ramoops pmsg zone
-// (@0xB1BC0000, ram.c backend: persistent_ram_buffer{sig,start,size,data};
+// Mirror all serial output into the kernel ramoops zones
+// (ram.c backend: persistent_ram_buffer{sig,start,size,data};
 //  zone order: dump@+0, console@+0x40000, ftrace@+0x80000, pmsg@+0xC0000;
 //  expected sig = 0 ^ PERSISTENT_RAM_SIG = 0x43474244)
-// so TWRP can read the UEFI log via /sys/fs/pstore/pmsg-ramoops-0.
-#define PMSG_PRZ_ADDR 0xB1BC0000ULL
+// so TWRP can read the UEFI log via /sys/fs/pstore/*-ramoops-0.
+// Tri-mirror: dump survives kernel userspace (panic-only writer),
+// console+pmsg are the classic channels.
 #define PMSG_PRZ_SIZE 0x00040000
 #define PMSG_PRZ_SIG  0x43474244
 
-static void pmsg_putchar(UINT8 c)
+static const UINT64 mPrzZones[] = {
+  0xB1B00000ULL, // dump zone -> dmesg-ramoops-0
+  0xB1B40000ULL, // console zone -> console-ramoops-0
+  0xB1BC0000ULL, // pmsg zone -> pmsg-ramoops-0
+};
+
+static void prz_putchar(UINT64 Addr, UINT8 c)
 {
-  volatile UINT32 *hdr  = (UINT32 *)PMSG_PRZ_ADDR;
-  UINT8 *          data = (UINT8 *)(PMSG_PRZ_ADDR + 12);
+  volatile UINT32 *hdr  = (UINT32 *)Addr;
+  UINT8 *          data = (UINT8 *)(Addr + 12);
   UINT32           pos;
 
   pos = hdr[2];
@@ -336,7 +343,14 @@ static void pmsg_putchar(UINT8 c)
   data[pos] = c;
   hdr[2]    = pos + 1;
 
-  WriteBackInvalidateDataCacheRange((void *)PMSG_PRZ_ADDR, 16 + pos);
+  WriteBackInvalidateDataCacheRange((void *)Addr, 16 + pos);
+}
+
+static void pmsg_putchar(UINT8 c)
+{
+  for (UINTN i = 0; i < sizeof(mPrzZones) / sizeof(mPrzZones[0]); i++) {
+    prz_putchar(mPrzZones[i], c);
+  }
 }
 
 UINTN
