@@ -291,17 +291,23 @@ void FbConFlush(void)
       (total_x * total_y * bytes_per_bpp));
 }
 
+// v151: private flat window inside PStore. QC writers occupy only the
+// region start and a ring near PStore+0x3E0000; the middle is unused.
+// Old code kept the offset counter at PStore end - inside QC's zone.
+#define MULOG_BASE_OFF 0x100000
+#define MULOG_SIZE     0x2C0000
+
 static void mem_putchar(UINT8 c)
 {
-  UINTN              size   = PStore.Length - sizeof(UINTN);
-  UINT8 *            base   = (UINT8 *)PStore.Address;
+  UINTN              size   = MULOG_SIZE - sizeof(UINTN);
+  UINT8 *            base   = (UINT8 *)(PStore.Address + MULOG_BASE_OFF);
   UINTN *            offset = (UINTN *)((UINTN)base + size);
 
   *offset                   = *offset % size;
   base[*offset]             = c;
+  WriteBackInvalidateDataCacheRange(&base[*offset], sizeof(UINT8));
   *offset                   = (*offset + 1) % size;
-
-  WriteBackInvalidateDataCacheRange(base, size);
+  WriteBackInvalidateDataCacheRange(offset, sizeof(UINTN));
 }
 
 // Mirror all serial output into the kernel ramoops zones
