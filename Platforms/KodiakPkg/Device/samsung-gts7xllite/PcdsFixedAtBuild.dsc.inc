@@ -16,3 +16,6 @@ gAndromedaPkgTokenSpaceGuid.PcdABLProduct|"gts7xllite"
 
 # Storage
 gAndromedaPkgTokenSpaceGuid.PcdStorageHasUFS3|0
+
+# v148: FrontPage aus der Boot-Order entfernen - kein Touch/Buttons, UI ist Sackgasse
+gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerInBootOrder|FALSE
