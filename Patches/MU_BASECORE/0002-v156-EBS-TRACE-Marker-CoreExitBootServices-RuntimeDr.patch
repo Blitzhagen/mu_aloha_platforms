@@ -1,0 +1,2907 @@
+From 94340f386e55933e53a73a71113cba1d471111d7 Mon Sep 17 00:00:00 2001
+From: Devin <devin@local>
+Date: Tue, 24 Nov 2026 16:37:48 +0000
+Subject: [PATCH 2/2] v156: EBS-TRACE-Marker (CoreExitBootServices +
+ RuntimeDriverSetVirtualAddressMap)
+
+---
+ MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c | 2009 ++++++++++++-----------
+ MdeModulePkg/Core/RuntimeDxe/Runtime.c  |  874 +++++-----
+ 2 files changed, 1445 insertions(+), 1438 deletions(-)
+
+diff --git a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+index 5b21d807bc..3b9d06d162 100644
+--- a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
++++ b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+@@ -1,1002 +1,1007 @@
+-/** @file
+-  DXE Core Main Entry Point
+-
+-Copyright (c) 2006 - 2022, Intel Corporation. All rights reserved.<BR>
+-SPDX-License-Identifier: BSD-2-Clause-Patent
+-
+-**/
+-
+-#include "DxeMain.h"
+-
+-//
+-// DXE Core Global Variables for Protocols from PEI
+-//
+-EFI_HANDLE  mDecompressHandle = NULL;
+-
+-//
+-// DXE Core globals for Architecture Protocols
+-//
+-EFI_SECURITY_ARCH_PROTOCOL        *gSecurity      = NULL;
+-EFI_SECURITY2_ARCH_PROTOCOL       *gSecurity2     = NULL;
+-EFI_CPU_ARCH_PROTOCOL             *gCpu           = NULL;
+-EFI_CPU2_PROTOCOL                 *gCpu2          = NULL;    // MU_CHANGE: Add Cpu2 Protocol
+-EFI_METRONOME_ARCH_PROTOCOL       *gMetronome     = NULL;
+-EFI_TIMER_ARCH_PROTOCOL           *gTimer         = NULL;
+-EFI_BDS_ARCH_PROTOCOL             *gBds           = NULL;
+-EFI_WATCHDOG_TIMER_ARCH_PROTOCOL  *gWatchdogTimer = NULL;
+-
+-//
+-// DXE Core globals for optional protocol dependencies
+-//
+-EFI_SMM_BASE2_PROTOCOL  *gSmmBase2 = NULL;
+-
+-//
+-// DXE Core Global used to update core loaded image protocol handle
+-//
+-EFI_GUID                   *gDxeCoreFileName;
+-EFI_LOADED_IMAGE_PROTOCOL  *gDxeCoreLoadedImage;
+-
+-//
+-// DXE Core Module Variables
+-//
+-EFI_BOOT_SERVICES  mBootServices = {
+-  {
+-    EFI_BOOT_SERVICES_SIGNATURE,                                                          // Signature
+-    EFI_BOOT_SERVICES_REVISION,                                                           // Revision
+-    sizeof (EFI_BOOT_SERVICES),                                                           // HeaderSize
+-    0,                                                                                    // CRC32
+-    0                                                                                     // Reserved
+-  },
+-  (EFI_RAISE_TPL)CoreRaiseTpl,                                                            // RaiseTPL
+-  (EFI_RESTORE_TPL)CoreRestoreTpl,                                                        // RestoreTPL
+-  (EFI_ALLOCATE_PAGES)CoreAllocatePages,                                                  // AllocatePages
+-  (EFI_FREE_PAGES)CoreFreePages,                                                          // FreePages
+-  (EFI_GET_MEMORY_MAP)CoreGetMemoryMap,                                                   // GetMemoryMap
+-  (EFI_ALLOCATE_POOL)CoreAllocatePool,                                                    // AllocatePool
+-  (EFI_FREE_POOL)CoreFreePool,                                                            // FreePool
+-  (EFI_CREATE_EVENT)CoreCreateEvent,                                                      // CreateEvent
+-  (EFI_SET_TIMER)CoreSetTimer,                                                            // SetTimer
+-  (EFI_WAIT_FOR_EVENT)CoreWaitForEvent,                                                   // WaitForEvent
+-  (EFI_SIGNAL_EVENT)CoreSignalEvent,                                                      // SignalEvent
+-  (EFI_CLOSE_EVENT)CoreCloseEvent,                                                        // CloseEvent
+-  (EFI_CHECK_EVENT)CoreCheckEvent,                                                        // CheckEvent
+-  (EFI_INSTALL_PROTOCOL_INTERFACE)CoreInstallProtocolInterface,                           // InstallProtocolInterface
+-  (EFI_REINSTALL_PROTOCOL_INTERFACE)CoreReinstallProtocolInterface,                       // ReinstallProtocolInterface
+-  (EFI_UNINSTALL_PROTOCOL_INTERFACE)CoreUninstallProtocolInterface,                       // UninstallProtocolInterface
+-  (EFI_HANDLE_PROTOCOL)CoreHandleProtocol,                                                // HandleProtocol
+-  (VOID *)NULL,                                                                           // Reserved
+-  (EFI_REGISTER_PROTOCOL_NOTIFY)CoreRegisterProtocolNotify,                               // RegisterProtocolNotify
+-  (EFI_LOCATE_HANDLE)CoreLocateHandle,                                                    // LocateHandle
+-  (EFI_LOCATE_DEVICE_PATH)CoreLocateDevicePath,                                           // LocateDevicePath
+-  (EFI_INSTALL_CONFIGURATION_TABLE)CoreInstallConfigurationTable,                         // InstallConfigurationTable
+-  (EFI_IMAGE_LOAD)CoreLoadImage,                                                          // LoadImage
+-  (EFI_IMAGE_START)CoreStartImage,                                                        // StartImage
+-  (EFI_EXIT)CoreExit,                                                                     // Exit
+-  (EFI_IMAGE_UNLOAD)CoreUnloadImage,                                                      // UnloadImage
+-  (EFI_EXIT_BOOT_SERVICES)CoreExitBootServices,                                           // ExitBootServices
+-  (EFI_GET_NEXT_MONOTONIC_COUNT)CoreEfiNotAvailableYetArg1,                               // GetNextMonotonicCount
+-  (EFI_STALL)CoreStall,                                                                   // Stall
+-  (EFI_SET_WATCHDOG_TIMER)CoreSetWatchdogTimer,                                           // SetWatchdogTimer
+-  (EFI_CONNECT_CONTROLLER)CoreConnectController,                                          // ConnectController
+-  (EFI_DISCONNECT_CONTROLLER)CoreDisconnectController,                                    // DisconnectController
+-  (EFI_OPEN_PROTOCOL)CoreOpenProtocol,                                                    // OpenProtocol
+-  (EFI_CLOSE_PROTOCOL)CoreCloseProtocol,                                                  // CloseProtocol
+-  (EFI_OPEN_PROTOCOL_INFORMATION)CoreOpenProtocolInformation,                             // OpenProtocolInformation
+-  (EFI_PROTOCOLS_PER_HANDLE)CoreProtocolsPerHandle,                                       // ProtocolsPerHandle
+-  (EFI_LOCATE_HANDLE_BUFFER)CoreLocateHandleBuffer,                                       // LocateHandleBuffer
+-  (EFI_LOCATE_PROTOCOL)CoreLocateProtocol,                                                // LocateProtocol
+-  (EFI_INSTALL_MULTIPLE_PROTOCOL_INTERFACES)CoreInstallMultipleProtocolInterfaces,        // InstallMultipleProtocolInterfaces
+-  (EFI_UNINSTALL_MULTIPLE_PROTOCOL_INTERFACES)CoreUninstallMultipleProtocolInterfaces,    // UninstallMultipleProtocolInterfaces
+-  (EFI_CALCULATE_CRC32)CoreEfiNotAvailableYetArg3,                                        // CalculateCrc32
+-  (EFI_COPY_MEM)CopyMem,                                                                  // CopyMem
+-  (EFI_SET_MEM)SetMem,                                                                    // SetMem
+-  (EFI_CREATE_EVENT_EX)CoreCreateEventEx                                                  // CreateEventEx
+-};
+-
+-EFI_DXE_SERVICES  mDxeServices = {
+-  {
+-    DXE_SERVICES_SIGNATURE,                                           // Signature
+-    DXE_SERVICES_REVISION,                                            // Revision
+-    sizeof (DXE_SERVICES),                                            // HeaderSize
+-    0,                                                                // CRC32
+-    0                                                                 // Reserved
+-  },
+-  (EFI_ADD_MEMORY_SPACE)CoreAddMemorySpace,                               // AddMemorySpace
+-  (EFI_ALLOCATE_MEMORY_SPACE)CoreAllocateMemorySpace,                     // AllocateMemorySpace
+-  (EFI_FREE_MEMORY_SPACE)CoreFreeMemorySpace,                             // FreeMemorySpace
+-  (EFI_REMOVE_MEMORY_SPACE)CoreRemoveMemorySpace,                         // RemoveMemorySpace
+-  (EFI_GET_MEMORY_SPACE_DESCRIPTOR)CoreGetMemorySpaceDescriptor,          // GetMemorySpaceDescriptor
+-  (EFI_SET_MEMORY_SPACE_ATTRIBUTES)CoreSetMemorySpaceAttributes,          // SetMemorySpaceAttributes
+-  (EFI_GET_MEMORY_SPACE_MAP)CoreGetMemorySpaceMap,                        // GetMemorySpaceMap
+-  (EFI_ADD_IO_SPACE)CoreAddIoSpace,                                       // AddIoSpace
+-  (EFI_ALLOCATE_IO_SPACE)CoreAllocateIoSpace,                             // AllocateIoSpace
+-  (EFI_FREE_IO_SPACE)CoreFreeIoSpace,                                     // FreeIoSpace
+-  (EFI_REMOVE_IO_SPACE)CoreRemoveIoSpace,                                 // RemoveIoSpace
+-  (EFI_GET_IO_SPACE_DESCRIPTOR)CoreGetIoSpaceDescriptor,                  // GetIoSpaceDescriptor
+-  (EFI_GET_IO_SPACE_MAP)CoreGetIoSpaceMap,                                // GetIoSpaceMap
+-  (EFI_DISPATCH)CoreDispatcher,                                           // Dispatch
+-  (EFI_SCHEDULE)CoreSchedule,                                             // Schedule
+-  (EFI_TRUST)CoreTrust,                                                   // Trust
+-  (EFI_PROCESS_FIRMWARE_VOLUME)CoreProcessFirmwareVolume,                 // ProcessFirmwareVolume
+-  (EFI_SET_MEMORY_SPACE_CAPABILITIES)CoreSetMemorySpaceCapabilities,      // SetMemorySpaceCapabilities
+-};
+-
+-EFI_SYSTEM_TABLE  mEfiSystemTableTemplate = {
+-  {
+-    EFI_SYSTEM_TABLE_SIGNATURE,                                           // Signature
+-    EFI_SYSTEM_TABLE_REVISION,                                            // Revision
+-    sizeof (EFI_SYSTEM_TABLE),                                            // HeaderSize
+-    0,                                                                    // CRC32
+-    0                                                                     // Reserved
+-  },
+-  NULL,                                                                   // FirmwareVendor
+-  0,                                                                      // FirmwareRevision
+-  NULL,                                                                   // ConsoleInHandle
+-  NULL,                                                                   // ConIn
+-  NULL,                                                                   // ConsoleOutHandle
+-  NULL,                                                                   // ConOut
+-  NULL,                                                                   // StandardErrorHandle
+-  NULL,                                                                   // StdErr
+-  NULL,                                                                   // RuntimeServices
+-  &mBootServices,                                                         // BootServices
+-  0,                                                                      // NumberOfConfigurationTableEntries
+-  NULL                                                                    // ConfigurationTable
+-};
+-
+-EFI_RUNTIME_SERVICES  mEfiRuntimeServicesTableTemplate = {
+-  {
+-    EFI_RUNTIME_SERVICES_SIGNATURE,                               // Signature
+-    EFI_RUNTIME_SERVICES_REVISION,                                // Revision
+-    sizeof (EFI_RUNTIME_SERVICES),                                // HeaderSize
+-    0,                                                            // CRC32
+-    0                                                             // Reserved
+-  },
+-  (EFI_GET_TIME)CoreEfiNotAvailableYetArg2,                       // GetTime
+-  (EFI_SET_TIME)CoreEfiNotAvailableYetArg1,                       // SetTime
+-  (EFI_GET_WAKEUP_TIME)CoreEfiNotAvailableYetArg3,                // GetWakeupTime
+-  (EFI_SET_WAKEUP_TIME)CoreEfiNotAvailableYetArg2,                // SetWakeupTime
+-  (EFI_SET_VIRTUAL_ADDRESS_MAP)CoreEfiNotAvailableYetArg4,        // SetVirtualAddressMap
+-  (EFI_CONVERT_POINTER)CoreEfiNotAvailableYetArg2,                // ConvertPointer
+-  (EFI_GET_VARIABLE)CoreEfiNotAvailableYetArg5,                   // GetVariable
+-  (EFI_GET_NEXT_VARIABLE_NAME)CoreEfiNotAvailableYetArg3,         // GetNextVariableName
+-  (EFI_SET_VARIABLE)CoreEfiNotAvailableYetArg5,                   // SetVariable
+-  (EFI_GET_NEXT_HIGH_MONO_COUNT)CoreEfiNotAvailableYetArg1,       // GetNextHighMonotonicCount
+-  (EFI_RESET_SYSTEM)CoreEfiNotAvailableYetArg4,                   // ResetSystem
+-  (EFI_UPDATE_CAPSULE)CoreEfiNotAvailableYetArg3,                 // UpdateCapsule
+-  (EFI_QUERY_CAPSULE_CAPABILITIES)CoreEfiNotAvailableYetArg4,     // QueryCapsuleCapabilities
+-  (EFI_QUERY_VARIABLE_INFO)CoreEfiNotAvailableYetArg4             // QueryVariableInfo
+-};
+-
+-EFI_RUNTIME_ARCH_PROTOCOL  gRuntimeTemplate = {
+-  INITIALIZE_LIST_HEAD_VARIABLE (gRuntimeTemplate.ImageHead),
+-  INITIALIZE_LIST_HEAD_VARIABLE (gRuntimeTemplate.EventHead),
+-
+-  //
+-  // Make sure Size != sizeof (EFI_MEMORY_DESCRIPTOR). This will
+-  // prevent people from having pointer math bugs in their code.
+-  // now you have to use *DescriptorSize to make things work.
+-  //
+-  sizeof (EFI_MEMORY_DESCRIPTOR) + sizeof (UINT64) - (sizeof (EFI_MEMORY_DESCRIPTOR) % sizeof (UINT64)),
+-  EFI_MEMORY_DESCRIPTOR_VERSION,
+-  0,
+-  NULL,
+-  NULL,
+-  FALSE,
+-  FALSE
+-};
+-
+-EFI_RUNTIME_ARCH_PROTOCOL  *gRuntime = &gRuntimeTemplate;
+-
+-//
+-// DXE Core Global Variables for the EFI System Table, Boot Services Table,
+-// DXE Services Table, and Runtime Services Table
+-//
+-EFI_DXE_SERVICES  *gDxeCoreDS = &mDxeServices;
+-EFI_SYSTEM_TABLE  *gDxeCoreST = NULL;
+-
+-//
+-// For debug initialize gDxeCoreRT to template. gDxeCoreRT must be allocated from RT memory
+-//  but gDxeCoreRT is used for ASSERT () and DEBUG () type macros so lets give it
+-//  a value that will not cause debug infrastructure to crash early on.
+-//
+-EFI_RUNTIME_SERVICES  *gDxeCoreRT         = &mEfiRuntimeServicesTableTemplate;
+-EFI_HANDLE            gDxeCoreImageHandle = NULL;
+-
+-BOOLEAN  gMemoryMapTerminated = FALSE;
+-
+-static BOOLEAN  mExitBootServicesCalled = FALSE;
+-
+-//
+-// EFI Decompress Protocol
+-//
+-EFI_DECOMPRESS_PROTOCOL  gEfiDecompress = {
+-  DxeMainUefiDecompressGetInfo,
+-  DxeMainUefiDecompress
+-};
+-
+-//
+-// For Loading modules at fixed address feature, the configuration table is to cache the top address below which to load
+-// Runtime code&boot time code
+-//
+-GLOBAL_REMOVE_IF_UNREFERENCED EFI_LOAD_FIXED_ADDRESS_CONFIGURATION_TABLE  gLoadModuleAtFixAddressConfigurationTable = { 0, 0 };
+-
+-// Main entry point to the DXE Core
+-//
+-
+-/**
+-  Main entry point to DXE Core.
+-
+-  @param  HobStart               Pointer to the beginning of the HOB List from PEI.
+-
+-  @return This function should never return.
+-
+-**/
+-VOID
+-EFIAPI
+-DxeMain (
+-  IN  VOID  *HobStart
+-  )
+-{
+-  EFI_STATUS                    Status;
+-  EFI_PHYSICAL_ADDRESS          MemoryBaseAddress;
+-  UINT64                        MemoryLength;
+-  PE_COFF_LOADER_IMAGE_CONTEXT  ImageContext;
+-  UINTN                         Index;
+-  EFI_HOB_GUID_TYPE             *GuidHob;
+-  EFI_VECTOR_HANDOFF_INFO       *VectorInfoList;
+-  EFI_VECTOR_HANDOFF_INFO       *VectorInfo;
+-  VOID                          *EntryPoint;
+-
+-  //
+-  // Setup the default exception handlers
+-  //
+-  VectorInfoList = NULL;
+-  GuidHob        = GetNextGuidHob (&gEfiVectorHandoffInfoPpiGuid, HobStart);
+-  if (GuidHob != NULL) {
+-    VectorInfoList = (EFI_VECTOR_HANDOFF_INFO *)(GET_GUID_HOB_DATA (GuidHob));
+-  }
+-
+-  Status = InitializeCpuExceptionHandlers (VectorInfoList);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Setup Exception Stack
+-  //
+-  Status = InitializeSeparateExceptionStacks (NULL, NULL);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Initialize Debug Agent to support source level debug in DXE phase
+-  //
+-  InitializeDebugAgent (DEBUG_AGENT_INIT_DXE_CORE, HobStart, NULL);
+-
+-  //
+-  // Initialize Memory Services
+-  //
+-  CoreInitializeMemoryServices (&HobStart, &MemoryBaseAddress, &MemoryLength);
+-
+-  MemoryProfileInit (HobStart);
+-
+-  //
+-  // Start the Handle Services.
+-  //
+-  Status = CoreInitializeHandleServices ();
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Start the Image Services.
+-  //
+-  Status = CoreInitializeImageServices (HobStart);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  // MU_CHANGE START: Add initialization of the memory protection special region protocol to support
+-  //                  applying specific settings to memory regions during protection initialization
+-  CoreInitializeMemoryProtectionSpecialRegions ();
+-  // MU_CHANGE END
+-
+-  //
+-  // Initialize the Global Coherency Domain Services
+-  //
+-  Status = CoreInitializeGcdServices (&HobStart, MemoryBaseAddress, MemoryLength);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Allocate the EFI System Table and EFI Runtime Service Table from EfiRuntimeServicesData
+-  // Use the templates to initialize the contents of the EFI System Table and EFI Runtime Services Table
+-  //
+-  gDxeCoreST = AllocateRuntimeCopyPool (sizeof (EFI_SYSTEM_TABLE), &mEfiSystemTableTemplate);
+-  ASSERT (gDxeCoreST != NULL);
+-
+-  gDxeCoreRT = AllocateRuntimeCopyPool (sizeof (EFI_RUNTIME_SERVICES), &mEfiRuntimeServicesTableTemplate);
+-  ASSERT (gDxeCoreRT != NULL);
+-
+-  gDxeCoreST->RuntimeServices = gDxeCoreRT;
+-
+-  //
+-  // Update DXE Core Loaded Image Protocol with allocated UEFI System Table
+-  //
+-  gDxeCoreLoadedImage->SystemTable = gDxeCoreST;
+-
+-  //
+-  // Call constructor for all libraries
+-  //
+-  ProcessLibraryConstructorList (gDxeCoreImageHandle, gDxeCoreST);
+-  PERF_CROSSMODULE_END ("PEI");
+-  PERF_CROSSMODULE_BEGIN ("DXE");
+-
+-  //
+-  // Log MemoryBaseAddress and MemoryLength again (from
+-  // CoreInitializeMemoryServices()), now that library constructors have
+-  // executed.
+-  //
+-  DEBUG ((
+-    DEBUG_INFO,
+-    "%a: MemoryBaseAddress=0x%Lx MemoryLength=0x%Lx\n",
+-    __func__,
+-    MemoryBaseAddress,
+-    MemoryLength
+-    ));
+-
+-  //
+-  // Report DXE Core image information to the PE/COFF Extra Action Library
+-  //
+-  ZeroMem (&ImageContext, sizeof (ImageContext));
+-  ImageContext.ImageAddress  = (EFI_PHYSICAL_ADDRESS)(UINTN)gDxeCoreLoadedImage->ImageBase;
+-  ImageContext.PdbPointer    = PeCoffLoaderGetPdbPointer ((VOID *)(UINTN)ImageContext.ImageAddress);
+-  ImageContext.SizeOfHeaders = PeCoffGetSizeOfHeaders ((VOID *)(UINTN)ImageContext.ImageAddress);
+-  Status                     = PeCoffLoaderGetEntryPoint ((VOID *)(UINTN)ImageContext.ImageAddress, &EntryPoint);
+-  if (Status == EFI_SUCCESS) {
+-    ImageContext.EntryPoint = (EFI_PHYSICAL_ADDRESS)(UINTN)EntryPoint;
+-  }
+-
+-  ImageContext.Handle    = (VOID *)(UINTN)gDxeCoreLoadedImage->ImageBase;
+-  ImageContext.ImageRead = PeCoffLoaderImageReadFromMemory;
+-  PeCoffLoaderRelocateImageExtraAction (&ImageContext);
+-
+-  //
+-  // Install the DXE Services Table into the EFI System Tables's Configuration Table
+-  //
+-  Status = CoreInstallConfigurationTable (&gEfiDxeServicesTableGuid, gDxeCoreDS);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Install the HOB List into the EFI System Tables's Configuration Table
+-  //
+-  Status = CoreInstallConfigurationTable (&gEfiHobListGuid, HobStart);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Install Memory Type Information Table into the EFI System Tables's Configuration Table
+-  //
+-  Status = CoreInstallConfigurationTable (&gEfiMemoryTypeInformationGuid, &gMemoryTypeInformation);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // If Loading modules At fixed address feature is enabled, install Load moduels at fixed address
+-  // Configuration Table so that user could easily to retrieve the top address to load Dxe and PEI
+-  // Code and Tseg base to load SMM driver.
+-  //
+-  if (PcdGet64 (PcdLoadModuleAtFixAddressEnable) != 0) {
+-    Status = CoreInstallConfigurationTable (&gLoadFixedAddressConfigurationTableGuid, &gLoadModuleAtFixAddressConfigurationTable);
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-
+-  //
+-  // Report Status Code here for DXE_ENTRY_POINT once it is available
+-  //
+-  REPORT_STATUS_CODE (
+-    EFI_PROGRESS_CODE,
+-    (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_PC_ENTRY_POINT)
+-    );
+-
+-  //
+-  // Create the aligned system table pointer structure that is used by external
+-  // debuggers to locate the system table...  Also, install debug image info
+-  // configuration table.
+-  //
+-  CoreInitializeDebugImageInfoTable ();
+-  CoreNewDebugImageInfoEntry (
+-    EFI_DEBUG_IMAGE_INFO_TYPE_NORMAL,
+-    gDxeCoreLoadedImage,
+-    gDxeCoreImageHandle
+-    );
+-
+-  DEBUG ((DEBUG_INFO | DEBUG_LOAD, "HOBLIST address in DXE = 0x%p\n", HobStart));
+-
+-  DEBUG_CODE_BEGIN ();
+-  EFI_PEI_HOB_POINTERS  Hob;
+-
+-  for (Hob.Raw = HobStart; !END_OF_HOB_LIST (Hob); Hob.Raw = GET_NEXT_HOB (Hob)) {
+-    if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_MEMORY_ALLOCATION) {
+-      DEBUG ((
+-        DEBUG_INFO | DEBUG_LOAD,
+-        "Memory Allocation 0x%08x 0x%0lx - 0x%0lx\n", \
+-        Hob.MemoryAllocation->AllocDescriptor.MemoryType,                      \
+-        Hob.MemoryAllocation->AllocDescriptor.MemoryBaseAddress,               \
+-        Hob.MemoryAllocation->AllocDescriptor.MemoryBaseAddress + Hob.MemoryAllocation->AllocDescriptor.MemoryLength - 1
+-        ));
+-    }
+-  }
+-
+-  for (Hob.Raw = HobStart; !END_OF_HOB_LIST (Hob); Hob.Raw = GET_NEXT_HOB (Hob)) {
+-    if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV) {
+-      DEBUG ((
+-        DEBUG_INFO | DEBUG_LOAD,
+-        "FV Hob            0x%0lx - 0x%0lx\n",
+-        Hob.FirmwareVolume->BaseAddress,
+-        Hob.FirmwareVolume->BaseAddress + Hob.FirmwareVolume->Length - 1
+-        ));
+-    } else if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV2) {
+-      DEBUG ((
+-        DEBUG_INFO | DEBUG_LOAD,
+-        "FV2 Hob           0x%0lx - 0x%0lx\n",
+-        Hob.FirmwareVolume2->BaseAddress,
+-        Hob.FirmwareVolume2->BaseAddress + Hob.FirmwareVolume2->Length - 1
+-        ));
+-      DEBUG ((
+-        DEBUG_INFO | DEBUG_LOAD,
+-        "                  %g - %g\n",
+-        &Hob.FirmwareVolume2->FvName,
+-        &Hob.FirmwareVolume2->FileName
+-        ));
+-    } else if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV3) {
+-      DEBUG ((
+-        DEBUG_INFO | DEBUG_LOAD,
+-        "FV3 Hob           0x%0lx - 0x%0lx - 0x%x - 0x%x\n",
+-        Hob.FirmwareVolume3->BaseAddress,
+-        Hob.FirmwareVolume3->BaseAddress + Hob.FirmwareVolume3->Length - 1,
+-        Hob.FirmwareVolume3->AuthenticationStatus,
+-        Hob.FirmwareVolume3->ExtractedFv
+-        ));
+-      if (Hob.FirmwareVolume3->ExtractedFv) {
+-        DEBUG ((
+-          DEBUG_INFO | DEBUG_LOAD,
+-          "                  %g - %g\n",
+-          &Hob.FirmwareVolume3->FvName,
+-          &Hob.FirmwareVolume3->FileName
+-          ));
+-      }
+-    }
+-  }
+-
+-  DEBUG_CODE_END ();
+-
+-  //
+-  // Initialize the Event Services
+-  //
+-  Status = CoreInitializeEventServices ();
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Give the debug agent a chance to initialize with events.
+-  //
+-  InitializeDebugAgent (DEBUG_AGENT_INIT_DXE_CORE_LATE, HobStart, NULL);
+-
+-  MemoryProfileInstallProtocol ();
+-
+-  CoreInitializeMemoryAttributesTable ();
+-  CoreInitializeMemoryProtection ();
+-
+-  //
+-  // Get persisted vector hand-off info from GUIDeed HOB again due to HobStart may be updated,
+-  // and install configuration table
+-  //
+-  GuidHob = GetNextGuidHob (&gEfiVectorHandoffInfoPpiGuid, HobStart);
+-  if (GuidHob != NULL) {
+-    VectorInfoList = (EFI_VECTOR_HANDOFF_INFO *)(GET_GUID_HOB_DATA (GuidHob));
+-    VectorInfo     = VectorInfoList;
+-    Index          = 1;
+-    while (VectorInfo->Attribute != EFI_VECTOR_HANDOFF_LAST_ENTRY) {
+-      VectorInfo++;
+-      Index++;
+-    }
+-
+-    VectorInfo = AllocateCopyPool (sizeof (EFI_VECTOR_HANDOFF_INFO) * Index, (VOID *)VectorInfoList);
+-    ASSERT (VectorInfo != NULL);
+-    Status = CoreInstallConfigurationTable (&gEfiVectorHandoffTableGuid, (VOID *)VectorInfo);
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-
+-  //
+-  // Get the Protocols that were passed in from PEI to DXE through GUIDed HOBs
+-  //
+-  // These Protocols are not architectural. This implementation is sharing code between
+-  // PEI and DXE in order to save FLASH space. These Protocols could also be implemented
+-  // as part of the DXE Core. However, that would also require the DXE Core to be ported
+-  // each time a different CPU is used, a different Decompression algorithm is used, or a
+-  // different Image type is used. By placing these Protocols in PEI, the DXE Core remains
+-  // generic, and only PEI and the Arch Protocols need to be ported from Platform to Platform,
+-  // and from CPU to CPU.
+-  //
+-
+-  //
+-  // Publish the EFI, Tiano, and Custom Decompress protocols for use by other DXE components
+-  //
+-  Status = CoreInstallMultipleProtocolInterfaces (
+-             &mDecompressHandle,
+-             &gEfiDecompressProtocolGuid,
+-             &gEfiDecompress,
+-             NULL
+-             );
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Register for the GUIDs of the Architectural Protocols, so the rest of the
+-  // EFI Boot Services and EFI Runtime Services tables can be filled in.
+-  // Also register for the GUIDs of optional protocols.
+-  //
+-  CoreNotifyOnProtocolInstallation ();
+-
+-  //
+-  // Produce Firmware Volume Protocols, one for each FV in the HOB list.
+-  //
+-  Status = FwVolBlockDriverInit (gDxeCoreImageHandle, gDxeCoreST);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  Status = FwVolDriverInit (gDxeCoreImageHandle, gDxeCoreST);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Produce the Section Extraction Protocol
+-  //
+-  Status = InitializeSectionExtraction (gDxeCoreImageHandle, gDxeCoreST);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  // MU_CHANGE [BEGIN] - Support all TPLs
+-  //
+-  // Produce Internal Event Services
+-  //
+-  if (FeaturePcdGet (PcdInternalEventServicesEnabled)) {
+-    Status = InternalEventServicesInit ();
+-    ASSERT_EFI_ERROR (Status);
+-  }
+-
+-  // MU_CHANGE [END] - Support all TPLs
+-
+-  //
+-  // Initialize the DXE Dispatcher
+-  //
+-  CoreInitializeDispatcher ();
+-
+-  //
+-  // Invoke the DXE Dispatcher
+-  //
+-  CoreDispatcher ();
+-
+-  //
+-  // Display Architectural protocols that were not loaded if this is DEBUG build
+-  //
+-  DEBUG_CODE_BEGIN ();
+-  CoreDisplayMissingArchProtocols ();
+-  DEBUG_CODE_END ();
+-
+-  //
+-  // Display any drivers that were not dispatched because dependency expression
+-  // evaluated to false if this is a debug build
+-  //
+-  DEBUG_CODE_BEGIN ();
+-  CoreDisplayDiscoveredNotDispatched ();
+-  DEBUG_CODE_END ();
+-
+-  //
+-  // Assert if the Architectural Protocols are not present.
+-  //
+-  Status = CoreAllEfiServicesAvailable ();
+-  if (EFI_ERROR (Status)) {
+-    //
+-    // Report Status code that some Architectural Protocols are not present.
+-    //
+-    REPORT_STATUS_CODE (
+-      EFI_ERROR_CODE | EFI_ERROR_MAJOR,
+-      (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_EC_NO_ARCH)
+-      );
+-  }
+-
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // Report Status code before transfer control to BDS
+-  //
+-  REPORT_STATUS_CODE (
+-    EFI_PROGRESS_CODE,
+-    (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_PC_HANDOFF_TO_NEXT)
+-    );
+-
+-  //
+-  // Transfer control to the BDS Architectural Protocol
+-  //
+-  gBds->Entry (gBds);
+-
+-  //
+-  // BDS should never return
+-  //
+-  ASSERT (FALSE);
+-  CpuDeadLoop ();
+-
+-  UNREACHABLE ();
+-}
+-
+-/**
+-  Place holder function until all the Boot Services and Runtime Services are
+-  available.
+-
+-  @param  Arg1                   Undefined
+-
+-  @return EFI_NOT_AVAILABLE_YET
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreEfiNotAvailableYetArg1 (
+-  UINTN  Arg1
+-  )
+-{
+-  //
+-  // This function should never be executed.  If it does, then the architectural protocols
+-  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
+-  // DXE Core and all the Architectural Protocols are complete.
+-  //
+-
+-  return EFI_NOT_AVAILABLE_YET;
+-}
+-
+-/**
+-  Place holder function until all the Boot Services and Runtime Services are available.
+-
+-  @param  Arg1                   Undefined
+-  @param  Arg2                   Undefined
+-
+-  @return EFI_NOT_AVAILABLE_YET
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreEfiNotAvailableYetArg2 (
+-  UINTN  Arg1,
+-  UINTN  Arg2
+-  )
+-{
+-  //
+-  // This function should never be executed.  If it does, then the architectural protocols
+-  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
+-  // DXE Core and all the Architectural Protocols are complete.
+-  //
+-
+-  return EFI_NOT_AVAILABLE_YET;
+-}
+-
+-/**
+-  Place holder function until all the Boot Services and Runtime Services are available.
+-
+-  @param  Arg1                   Undefined
+-  @param  Arg2                   Undefined
+-  @param  Arg3                   Undefined
+-
+-  @return EFI_NOT_AVAILABLE_YET
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreEfiNotAvailableYetArg3 (
+-  UINTN  Arg1,
+-  UINTN  Arg2,
+-  UINTN  Arg3
+-  )
+-{
+-  //
+-  // This function should never be executed.  If it does, then the architectural protocols
+-  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
+-  // DXE Core and all the Architectural Protocols are complete.
+-  //
+-
+-  return EFI_NOT_AVAILABLE_YET;
+-}
+-
+-/**
+-  Place holder function until all the Boot Services and Runtime Services are available.
+-
+-  @param  Arg1                   Undefined
+-  @param  Arg2                   Undefined
+-  @param  Arg3                   Undefined
+-  @param  Arg4                   Undefined
+-
+-  @return EFI_NOT_AVAILABLE_YET
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreEfiNotAvailableYetArg4 (
+-  UINTN  Arg1,
+-  UINTN  Arg2,
+-  UINTN  Arg3,
+-  UINTN  Arg4
+-  )
+-{
+-  //
+-  // This function should never be executed.  If it does, then the architectural protocols
+-  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
+-  // DXE Core and all the Architectural Protocols are complete.
+-  //
+-
+-  return EFI_NOT_AVAILABLE_YET;
+-}
+-
+-/**
+-  Place holder function until all the Boot Services and Runtime Services are available.
+-
+-  @param  Arg1                   Undefined
+-  @param  Arg2                   Undefined
+-  @param  Arg3                   Undefined
+-  @param  Arg4                   Undefined
+-  @param  Arg5                   Undefined
+-
+-  @return EFI_NOT_AVAILABLE_YET
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreEfiNotAvailableYetArg5 (
+-  UINTN  Arg1,
+-  UINTN  Arg2,
+-  UINTN  Arg3,
+-  UINTN  Arg4,
+-  UINTN  Arg5
+-  )
+-{
+-  //
+-  // This function should never be executed.  If it does, then the architectural protocols
+-  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
+-  // DXE Core and all the Architectural Protocols are complete.
+-  //
+-
+-  return EFI_NOT_AVAILABLE_YET;
+-}
+-
+-/**
+-  Calcualte the 32-bit CRC in a EFI table using the service provided by the
+-  gRuntime service.
+-
+-  @param  Hdr                    Pointer to an EFI standard header
+-
+-**/
+-VOID
+-CalculateEfiHdrCrc (
+-  IN  OUT EFI_TABLE_HEADER  *Hdr
+-  )
+-{
+-  UINT32  Crc;
+-
+-  Hdr->CRC32 = 0;
+-
+-  //
+-  // If gBS->CalculateCrce32 () == CoreEfiNotAvailableYet () then
+-  //  Crc will come back as zero if we set it to zero here
+-  //
+-  Crc = 0;
+-  gBS->CalculateCrc32 ((UINT8 *)Hdr, Hdr->HeaderSize, &Crc);
+-  Hdr->CRC32 = Crc;
+-}
+-
+-/**
+-  Terminates all boot services.
+-
+-  @param  ImageHandle            Handle that identifies the exiting image.
+-  @param  MapKey                 Key to the latest memory map.
+-
+-  @retval EFI_SUCCESS            Boot Services terminated
+-  @retval EFI_INVALID_PARAMETER  MapKey is incorrect.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-CoreExitBootServices (
+-  IN EFI_HANDLE  ImageHandle,
+-  IN UINTN       MapKey
+-  )
+-{
+-  EFI_STATUS  Status;
+-
+-  //
+-  // Notify other drivers of their last chance to use boot services
+-  // before the memory map is terminated.
+-  //
+-  if (!mExitBootServicesCalled) {
+-    CoreNotifySignalList (&gEfiEventBeforeExitBootServicesGuid);
+-    mExitBootServicesCalled = TRUE;
+-  }
+-
+-  //
+-  // Disable Timer
+-  //
+-  gTimer->SetTimerPeriod (gTimer, 0);
+-
+-  //
+-  // Terminate memory services if the MapKey matches
+-  //
+-  Status = CoreTerminateMemoryMap (MapKey);
+-  if (EFI_ERROR (Status)) {
+-    //
+-    // Notify other drivers that ExitBootServices fail
+-    //
+-    CoreNotifySignalList (&gEventExitBootServicesFailedGuid);
+-    return Status;
+-  }
+-
+-  gMemoryMapTerminated = TRUE;
+-
+-  //
+-  // Notify other drivers that we are exiting boot services.
+-  //
+-  CoreNotifySignalList (&gEfiEventExitBootServicesGuid);
+-
+-  //
+-  // Report that ExitBootServices() has been called
+-  //
+-  REPORT_STATUS_CODE (
+-    EFI_PROGRESS_CODE,
+-    (EFI_SOFTWARE_EFI_BOOT_SERVICE | EFI_SW_BS_PC_EXIT_BOOT_SERVICES)
+-    );
+-
+-  MemoryProtectionExitBootServicesCallback ();
+-
+-  //
+-  // Disable interrupt of Debug timer.
+-  //
+-  SaveAndSetDebugTimerInterrupt (FALSE);
+-
+-  //
+-  // Disable CPU Interrupts
+-  //
+-  gCpu->DisableInterrupt (gCpu);
+-
+-  //
+-  // Clear the non-runtime values of the EFI System Table
+-  //
+-  gDxeCoreST->BootServices        = NULL;
+-  gDxeCoreST->ConIn               = NULL;
+-  gDxeCoreST->ConsoleInHandle     = NULL;
+-  gDxeCoreST->ConOut              = NULL;
+-  gDxeCoreST->ConsoleOutHandle    = NULL;
+-  gDxeCoreST->StdErr              = NULL;
+-  gDxeCoreST->StandardErrorHandle = NULL;
+-
+-  //
+-  // Recompute the 32-bit CRC of the EFI System Table
+-  //
+-  CalculateEfiHdrCrc (&gDxeCoreST->Hdr);
+-
+-  //
+-  // Zero out the Boot Service Table
+-  //
+-  ZeroMem (gBS, sizeof (EFI_BOOT_SERVICES));
+-  gBS = NULL;
+-
+-  //
+-  // Update the AtRuntime field in Runtiem AP.
+-  //
+-  gRuntime->AtRuntime = TRUE;
+-
+-  return Status;
+-}
+-
+-/**
+-  Given a compressed source buffer, this function retrieves the size of the
+-  uncompressed buffer and the size of the scratch buffer required to decompress
+-  the compressed source buffer.
+-
+-  The GetInfo() function retrieves the size of the uncompressed buffer and the
+-  temporary scratch buffer required to decompress the buffer specified by Source
+-  and SourceSize. If the size of the uncompressed buffer or the size of the
+-  scratch buffer cannot be determined from the compressed data specified by
+-  Source and SourceData, then EFI_INVALID_PARAMETER is returned. Otherwise, the
+-  size of the uncompressed buffer is returned in DestinationSize, the size of
+-  the scratch buffer is returned in ScratchSize, and EFI_SUCCESS is returned.
+-  The GetInfo() function does not have scratch buffer available to perform a
+-  thorough checking of the validity of the source data. It just retrieves the
+-  "Original Size" field from the beginning bytes of the source data and output
+-  it as DestinationSize. And ScratchSize is specific to the decompression
+-  implementation.
+-
+-  @param  This               A pointer to the EFI_DECOMPRESS_PROTOCOL instance.
+-  @param  Source             The source buffer containing the compressed data.
+-  @param  SourceSize         The size, in bytes, of the source buffer.
+-  @param  DestinationSize    A pointer to the size, in bytes, of the
+-                             uncompressed buffer that will be generated when the
+-                             compressed buffer specified by Source and
+-                             SourceSize is decompressed.
+-  @param  ScratchSize        A pointer to the size, in bytes, of the scratch
+-                             buffer that is required to decompress the
+-                             compressed buffer specified by Source and
+-                             SourceSize.
+-
+-  @retval EFI_SUCCESS        The size of the uncompressed data was returned in
+-                             DestinationSize and the size of the scratch buffer
+-                             was returned in ScratchSize.
+-  @retval EFI_INVALID_PARAMETER The size of the uncompressed data or the size of
+-                                the scratch buffer cannot be determined from the
+-                                compressed data specified by Source and
+-                                SourceSize.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-DxeMainUefiDecompressGetInfo (
+-  IN EFI_DECOMPRESS_PROTOCOL  *This,
+-  IN   VOID                   *Source,
+-  IN   UINT32                 SourceSize,
+-  OUT  UINT32                 *DestinationSize,
+-  OUT  UINT32                 *ScratchSize
+-  )
+-{
+-  if ((Source == NULL) || (DestinationSize == NULL) || (ScratchSize == NULL)) {
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  return UefiDecompressGetInfo (Source, SourceSize, DestinationSize, ScratchSize);
+-}
+-
+-/**
+-  Decompresses a compressed source buffer.
+-
+-  The Decompress() function extracts decompressed data to its original form.
+-  This protocol is designed so that the decompression algorithm can be
+-  implemented without using any memory services. As a result, the Decompress()
+-  Function is not allowed to call AllocatePool() or AllocatePages() in its
+-  implementation. It is the caller's responsibility to allocate and free the
+-  Destination and Scratch buffers.
+-  If the compressed source data specified by Source and SourceSize is
+-  successfully decompressed into Destination, then EFI_SUCCESS is returned. If
+-  the compressed source data specified by Source and SourceSize is not in a
+-  valid compressed data format, then EFI_INVALID_PARAMETER is returned.
+-
+-  @param  This                A pointer to the EFI_DECOMPRESS_PROTOCOL instance.
+-  @param  Source              The source buffer containing the compressed data.
+-  @param  SourceSize          SourceSizeThe size of source data.
+-  @param  Destination         On output, the destination buffer that contains
+-                              the uncompressed data.
+-  @param  DestinationSize     The size of the destination buffer.  The size of
+-                              the destination buffer needed is obtained from
+-                              EFI_DECOMPRESS_PROTOCOL.GetInfo().
+-  @param  Scratch             A temporary scratch buffer that is used to perform
+-                              the decompression.
+-  @param  ScratchSize         The size of scratch buffer. The size of the
+-                              scratch buffer needed is obtained from GetInfo().
+-
+-  @retval EFI_SUCCESS         Decompression completed successfully, and the
+-                              uncompressed buffer is returned in Destination.
+-  @retval EFI_INVALID_PARAMETER  The source buffer specified by Source and
+-                                 SourceSize is corrupted (not in a valid
+-                                 compressed format).
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-DxeMainUefiDecompress (
+-  IN     EFI_DECOMPRESS_PROTOCOL  *This,
+-  IN     VOID                     *Source,
+-  IN     UINT32                   SourceSize,
+-  IN OUT VOID                     *Destination,
+-  IN     UINT32                   DestinationSize,
+-  IN OUT VOID                     *Scratch,
+-  IN     UINT32                   ScratchSize
+-  )
+-{
+-  EFI_STATUS  Status;
+-  UINT32      TestDestinationSize;
+-  UINT32      TestScratchSize;
+-
+-  if ((Source == NULL) || (Destination == NULL) || (Scratch == NULL)) {
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  Status = UefiDecompressGetInfo (Source, SourceSize, &TestDestinationSize, &TestScratchSize);
+-  if (EFI_ERROR (Status)) {
+-    return Status;
+-  }
+-
+-  if ((ScratchSize < TestScratchSize) || (DestinationSize < TestDestinationSize)) {
+-    return RETURN_INVALID_PARAMETER;
+-  }
+-
+-  return UefiDecompress (Source, Destination, Scratch);
+-}
++/** @file
++  DXE Core Main Entry Point
++
++Copyright (c) 2006 - 2022, Intel Corporation. All rights reserved.<BR>
++SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "DxeMain.h"
++
++//
++// DXE Core Global Variables for Protocols from PEI
++//
++EFI_HANDLE  mDecompressHandle = NULL;
++
++//
++// DXE Core globals for Architecture Protocols
++//
++EFI_SECURITY_ARCH_PROTOCOL        *gSecurity      = NULL;
++EFI_SECURITY2_ARCH_PROTOCOL       *gSecurity2     = NULL;
++EFI_CPU_ARCH_PROTOCOL             *gCpu           = NULL;
++EFI_CPU2_PROTOCOL                 *gCpu2          = NULL;    // MU_CHANGE: Add Cpu2 Protocol
++EFI_METRONOME_ARCH_PROTOCOL       *gMetronome     = NULL;
++EFI_TIMER_ARCH_PROTOCOL           *gTimer         = NULL;
++EFI_BDS_ARCH_PROTOCOL             *gBds           = NULL;
++EFI_WATCHDOG_TIMER_ARCH_PROTOCOL  *gWatchdogTimer = NULL;
++
++//
++// DXE Core globals for optional protocol dependencies
++//
++EFI_SMM_BASE2_PROTOCOL  *gSmmBase2 = NULL;
++
++//
++// DXE Core Global used to update core loaded image protocol handle
++//
++EFI_GUID                   *gDxeCoreFileName;
++EFI_LOADED_IMAGE_PROTOCOL  *gDxeCoreLoadedImage;
++
++//
++// DXE Core Module Variables
++//
++EFI_BOOT_SERVICES  mBootServices = {
++  {
++    EFI_BOOT_SERVICES_SIGNATURE,                                                          // Signature
++    EFI_BOOT_SERVICES_REVISION,                                                           // Revision
++    sizeof (EFI_BOOT_SERVICES),                                                           // HeaderSize
++    0,                                                                                    // CRC32
++    0                                                                                     // Reserved
++  },
++  (EFI_RAISE_TPL)CoreRaiseTpl,                                                            // RaiseTPL
++  (EFI_RESTORE_TPL)CoreRestoreTpl,                                                        // RestoreTPL
++  (EFI_ALLOCATE_PAGES)CoreAllocatePages,                                                  // AllocatePages
++  (EFI_FREE_PAGES)CoreFreePages,                                                          // FreePages
++  (EFI_GET_MEMORY_MAP)CoreGetMemoryMap,                                                   // GetMemoryMap
++  (EFI_ALLOCATE_POOL)CoreAllocatePool,                                                    // AllocatePool
++  (EFI_FREE_POOL)CoreFreePool,                                                            // FreePool
++  (EFI_CREATE_EVENT)CoreCreateEvent,                                                      // CreateEvent
++  (EFI_SET_TIMER)CoreSetTimer,                                                            // SetTimer
++  (EFI_WAIT_FOR_EVENT)CoreWaitForEvent,                                                   // WaitForEvent
++  (EFI_SIGNAL_EVENT)CoreSignalEvent,                                                      // SignalEvent
++  (EFI_CLOSE_EVENT)CoreCloseEvent,                                                        // CloseEvent
++  (EFI_CHECK_EVENT)CoreCheckEvent,                                                        // CheckEvent
++  (EFI_INSTALL_PROTOCOL_INTERFACE)CoreInstallProtocolInterface,                           // InstallProtocolInterface
++  (EFI_REINSTALL_PROTOCOL_INTERFACE)CoreReinstallProtocolInterface,                       // ReinstallProtocolInterface
++  (EFI_UNINSTALL_PROTOCOL_INTERFACE)CoreUninstallProtocolInterface,                       // UninstallProtocolInterface
++  (EFI_HANDLE_PROTOCOL)CoreHandleProtocol,                                                // HandleProtocol
++  (VOID *)NULL,                                                                           // Reserved
++  (EFI_REGISTER_PROTOCOL_NOTIFY)CoreRegisterProtocolNotify,                               // RegisterProtocolNotify
++  (EFI_LOCATE_HANDLE)CoreLocateHandle,                                                    // LocateHandle
++  (EFI_LOCATE_DEVICE_PATH)CoreLocateDevicePath,                                           // LocateDevicePath
++  (EFI_INSTALL_CONFIGURATION_TABLE)CoreInstallConfigurationTable,                         // InstallConfigurationTable
++  (EFI_IMAGE_LOAD)CoreLoadImage,                                                          // LoadImage
++  (EFI_IMAGE_START)CoreStartImage,                                                        // StartImage
++  (EFI_EXIT)CoreExit,                                                                     // Exit
++  (EFI_IMAGE_UNLOAD)CoreUnloadImage,                                                      // UnloadImage
++  (EFI_EXIT_BOOT_SERVICES)CoreExitBootServices,                                           // ExitBootServices
++  (EFI_GET_NEXT_MONOTONIC_COUNT)CoreEfiNotAvailableYetArg1,                               // GetNextMonotonicCount
++  (EFI_STALL)CoreStall,                                                                   // Stall
++  (EFI_SET_WATCHDOG_TIMER)CoreSetWatchdogTimer,                                           // SetWatchdogTimer
++  (EFI_CONNECT_CONTROLLER)CoreConnectController,                                          // ConnectController
++  (EFI_DISCONNECT_CONTROLLER)CoreDisconnectController,                                    // DisconnectController
++  (EFI_OPEN_PROTOCOL)CoreOpenProtocol,                                                    // OpenProtocol
++  (EFI_CLOSE_PROTOCOL)CoreCloseProtocol,                                                  // CloseProtocol
++  (EFI_OPEN_PROTOCOL_INFORMATION)CoreOpenProtocolInformation,                             // OpenProtocolInformation
++  (EFI_PROTOCOLS_PER_HANDLE)CoreProtocolsPerHandle,                                       // ProtocolsPerHandle
++  (EFI_LOCATE_HANDLE_BUFFER)CoreLocateHandleBuffer,                                       // LocateHandleBuffer
++  (EFI_LOCATE_PROTOCOL)CoreLocateProtocol,                                                // LocateProtocol
++  (EFI_INSTALL_MULTIPLE_PROTOCOL_INTERFACES)CoreInstallMultipleProtocolInterfaces,        // InstallMultipleProtocolInterfaces
++  (EFI_UNINSTALL_MULTIPLE_PROTOCOL_INTERFACES)CoreUninstallMultipleProtocolInterfaces,    // UninstallMultipleProtocolInterfaces
++  (EFI_CALCULATE_CRC32)CoreEfiNotAvailableYetArg3,                                        // CalculateCrc32
++  (EFI_COPY_MEM)CopyMem,                                                                  // CopyMem
++  (EFI_SET_MEM)SetMem,                                                                    // SetMem
++  (EFI_CREATE_EVENT_EX)CoreCreateEventEx                                                  // CreateEventEx
++};
++
++EFI_DXE_SERVICES  mDxeServices = {
++  {
++    DXE_SERVICES_SIGNATURE,                                           // Signature
++    DXE_SERVICES_REVISION,                                            // Revision
++    sizeof (DXE_SERVICES),                                            // HeaderSize
++    0,                                                                // CRC32
++    0                                                                 // Reserved
++  },
++  (EFI_ADD_MEMORY_SPACE)CoreAddMemorySpace,                               // AddMemorySpace
++  (EFI_ALLOCATE_MEMORY_SPACE)CoreAllocateMemorySpace,                     // AllocateMemorySpace
++  (EFI_FREE_MEMORY_SPACE)CoreFreeMemorySpace,                             // FreeMemorySpace
++  (EFI_REMOVE_MEMORY_SPACE)CoreRemoveMemorySpace,                         // RemoveMemorySpace
++  (EFI_GET_MEMORY_SPACE_DESCRIPTOR)CoreGetMemorySpaceDescriptor,          // GetMemorySpaceDescriptor
++  (EFI_SET_MEMORY_SPACE_ATTRIBUTES)CoreSetMemorySpaceAttributes,          // SetMemorySpaceAttributes
++  (EFI_GET_MEMORY_SPACE_MAP)CoreGetMemorySpaceMap,                        // GetMemorySpaceMap
++  (EFI_ADD_IO_SPACE)CoreAddIoSpace,                                       // AddIoSpace
++  (EFI_ALLOCATE_IO_SPACE)CoreAllocateIoSpace,                             // AllocateIoSpace
++  (EFI_FREE_IO_SPACE)CoreFreeIoSpace,                                     // FreeIoSpace
++  (EFI_REMOVE_IO_SPACE)CoreRemoveIoSpace,                                 // RemoveIoSpace
++  (EFI_GET_IO_SPACE_DESCRIPTOR)CoreGetIoSpaceDescriptor,                  // GetIoSpaceDescriptor
++  (EFI_GET_IO_SPACE_MAP)CoreGetIoSpaceMap,                                // GetIoSpaceMap
++  (EFI_DISPATCH)CoreDispatcher,                                           // Dispatch
++  (EFI_SCHEDULE)CoreSchedule,                                             // Schedule
++  (EFI_TRUST)CoreTrust,                                                   // Trust
++  (EFI_PROCESS_FIRMWARE_VOLUME)CoreProcessFirmwareVolume,                 // ProcessFirmwareVolume
++  (EFI_SET_MEMORY_SPACE_CAPABILITIES)CoreSetMemorySpaceCapabilities,      // SetMemorySpaceCapabilities
++};
++
++EFI_SYSTEM_TABLE  mEfiSystemTableTemplate = {
++  {
++    EFI_SYSTEM_TABLE_SIGNATURE,                                           // Signature
++    EFI_SYSTEM_TABLE_REVISION,                                            // Revision
++    sizeof (EFI_SYSTEM_TABLE),                                            // HeaderSize
++    0,                                                                    // CRC32
++    0                                                                     // Reserved
++  },
++  NULL,                                                                   // FirmwareVendor
++  0,                                                                      // FirmwareRevision
++  NULL,                                                                   // ConsoleInHandle
++  NULL,                                                                   // ConIn
++  NULL,                                                                   // ConsoleOutHandle
++  NULL,                                                                   // ConOut
++  NULL,                                                                   // StandardErrorHandle
++  NULL,                                                                   // StdErr
++  NULL,                                                                   // RuntimeServices
++  &mBootServices,                                                         // BootServices
++  0,                                                                      // NumberOfConfigurationTableEntries
++  NULL                                                                    // ConfigurationTable
++};
++
++EFI_RUNTIME_SERVICES  mEfiRuntimeServicesTableTemplate = {
++  {
++    EFI_RUNTIME_SERVICES_SIGNATURE,                               // Signature
++    EFI_RUNTIME_SERVICES_REVISION,                                // Revision
++    sizeof (EFI_RUNTIME_SERVICES),                                // HeaderSize
++    0,                                                            // CRC32
++    0                                                             // Reserved
++  },
++  (EFI_GET_TIME)CoreEfiNotAvailableYetArg2,                       // GetTime
++  (EFI_SET_TIME)CoreEfiNotAvailableYetArg1,                       // SetTime
++  (EFI_GET_WAKEUP_TIME)CoreEfiNotAvailableYetArg3,                // GetWakeupTime
++  (EFI_SET_WAKEUP_TIME)CoreEfiNotAvailableYetArg2,                // SetWakeupTime
++  (EFI_SET_VIRTUAL_ADDRESS_MAP)CoreEfiNotAvailableYetArg4,        // SetVirtualAddressMap
++  (EFI_CONVERT_POINTER)CoreEfiNotAvailableYetArg2,                // ConvertPointer
++  (EFI_GET_VARIABLE)CoreEfiNotAvailableYetArg5,                   // GetVariable
++  (EFI_GET_NEXT_VARIABLE_NAME)CoreEfiNotAvailableYetArg3,         // GetNextVariableName
++  (EFI_SET_VARIABLE)CoreEfiNotAvailableYetArg5,                   // SetVariable
++  (EFI_GET_NEXT_HIGH_MONO_COUNT)CoreEfiNotAvailableYetArg1,       // GetNextHighMonotonicCount
++  (EFI_RESET_SYSTEM)CoreEfiNotAvailableYetArg4,                   // ResetSystem
++  (EFI_UPDATE_CAPSULE)CoreEfiNotAvailableYetArg3,                 // UpdateCapsule
++  (EFI_QUERY_CAPSULE_CAPABILITIES)CoreEfiNotAvailableYetArg4,     // QueryCapsuleCapabilities
++  (EFI_QUERY_VARIABLE_INFO)CoreEfiNotAvailableYetArg4             // QueryVariableInfo
++};
++
++EFI_RUNTIME_ARCH_PROTOCOL  gRuntimeTemplate = {
++  INITIALIZE_LIST_HEAD_VARIABLE (gRuntimeTemplate.ImageHead),
++  INITIALIZE_LIST_HEAD_VARIABLE (gRuntimeTemplate.EventHead),
++
++  //
++  // Make sure Size != sizeof (EFI_MEMORY_DESCRIPTOR). This will
++  // prevent people from having pointer math bugs in their code.
++  // now you have to use *DescriptorSize to make things work.
++  //
++  sizeof (EFI_MEMORY_DESCRIPTOR) + sizeof (UINT64) - (sizeof (EFI_MEMORY_DESCRIPTOR) % sizeof (UINT64)),
++  EFI_MEMORY_DESCRIPTOR_VERSION,
++  0,
++  NULL,
++  NULL,
++  FALSE,
++  FALSE
++};
++
++EFI_RUNTIME_ARCH_PROTOCOL  *gRuntime = &gRuntimeTemplate;
++
++//
++// DXE Core Global Variables for the EFI System Table, Boot Services Table,
++// DXE Services Table, and Runtime Services Table
++//
++EFI_DXE_SERVICES  *gDxeCoreDS = &mDxeServices;
++EFI_SYSTEM_TABLE  *gDxeCoreST = NULL;
++
++//
++// For debug initialize gDxeCoreRT to template. gDxeCoreRT must be allocated from RT memory
++//  but gDxeCoreRT is used for ASSERT () and DEBUG () type macros so lets give it
++//  a value that will not cause debug infrastructure to crash early on.
++//
++EFI_RUNTIME_SERVICES  *gDxeCoreRT         = &mEfiRuntimeServicesTableTemplate;
++EFI_HANDLE            gDxeCoreImageHandle = NULL;
++
++BOOLEAN  gMemoryMapTerminated = FALSE;
++
++static BOOLEAN  mExitBootServicesCalled = FALSE;
++
++//
++// EFI Decompress Protocol
++//
++EFI_DECOMPRESS_PROTOCOL  gEfiDecompress = {
++  DxeMainUefiDecompressGetInfo,
++  DxeMainUefiDecompress
++};
++
++//
++// For Loading modules at fixed address feature, the configuration table is to cache the top address below which to load
++// Runtime code&boot time code
++//
++GLOBAL_REMOVE_IF_UNREFERENCED EFI_LOAD_FIXED_ADDRESS_CONFIGURATION_TABLE  gLoadModuleAtFixAddressConfigurationTable = { 0, 0 };
++
++// Main entry point to the DXE Core
++//
++
++/**
++  Main entry point to DXE Core.
++
++  @param  HobStart               Pointer to the beginning of the HOB List from PEI.
++
++  @return This function should never return.
++
++**/
++VOID
++EFIAPI
++DxeMain (
++  IN  VOID  *HobStart
++  )
++{
++  EFI_STATUS                    Status;
++  EFI_PHYSICAL_ADDRESS          MemoryBaseAddress;
++  UINT64                        MemoryLength;
++  PE_COFF_LOADER_IMAGE_CONTEXT  ImageContext;
++  UINTN                         Index;
++  EFI_HOB_GUID_TYPE             *GuidHob;
++  EFI_VECTOR_HANDOFF_INFO       *VectorInfoList;
++  EFI_VECTOR_HANDOFF_INFO       *VectorInfo;
++  VOID                          *EntryPoint;
++
++  //
++  // Setup the default exception handlers
++  //
++  VectorInfoList = NULL;
++  GuidHob        = GetNextGuidHob (&gEfiVectorHandoffInfoPpiGuid, HobStart);
++  if (GuidHob != NULL) {
++    VectorInfoList = (EFI_VECTOR_HANDOFF_INFO *)(GET_GUID_HOB_DATA (GuidHob));
++  }
++
++  Status = InitializeCpuExceptionHandlers (VectorInfoList);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Setup Exception Stack
++  //
++  Status = InitializeSeparateExceptionStacks (NULL, NULL);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Initialize Debug Agent to support source level debug in DXE phase
++  //
++  InitializeDebugAgent (DEBUG_AGENT_INIT_DXE_CORE, HobStart, NULL);
++
++  //
++  // Initialize Memory Services
++  //
++  CoreInitializeMemoryServices (&HobStart, &MemoryBaseAddress, &MemoryLength);
++
++  MemoryProfileInit (HobStart);
++
++  //
++  // Start the Handle Services.
++  //
++  Status = CoreInitializeHandleServices ();
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Start the Image Services.
++  //
++  Status = CoreInitializeImageServices (HobStart);
++  ASSERT_EFI_ERROR (Status);
++
++  // MU_CHANGE START: Add initialization of the memory protection special region protocol to support
++  //                  applying specific settings to memory regions during protection initialization
++  CoreInitializeMemoryProtectionSpecialRegions ();
++  // MU_CHANGE END
++
++  //
++  // Initialize the Global Coherency Domain Services
++  //
++  Status = CoreInitializeGcdServices (&HobStart, MemoryBaseAddress, MemoryLength);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Allocate the EFI System Table and EFI Runtime Service Table from EfiRuntimeServicesData
++  // Use the templates to initialize the contents of the EFI System Table and EFI Runtime Services Table
++  //
++  gDxeCoreST = AllocateRuntimeCopyPool (sizeof (EFI_SYSTEM_TABLE), &mEfiSystemTableTemplate);
++  ASSERT (gDxeCoreST != NULL);
++
++  gDxeCoreRT = AllocateRuntimeCopyPool (sizeof (EFI_RUNTIME_SERVICES), &mEfiRuntimeServicesTableTemplate);
++  ASSERT (gDxeCoreRT != NULL);
++
++  gDxeCoreST->RuntimeServices = gDxeCoreRT;
++
++  //
++  // Update DXE Core Loaded Image Protocol with allocated UEFI System Table
++  //
++  gDxeCoreLoadedImage->SystemTable = gDxeCoreST;
++
++  //
++  // Call constructor for all libraries
++  //
++  ProcessLibraryConstructorList (gDxeCoreImageHandle, gDxeCoreST);
++  PERF_CROSSMODULE_END ("PEI");
++  PERF_CROSSMODULE_BEGIN ("DXE");
++
++  //
++  // Log MemoryBaseAddress and MemoryLength again (from
++  // CoreInitializeMemoryServices()), now that library constructors have
++  // executed.
++  //
++  DEBUG ((
++    DEBUG_INFO,
++    "%a: MemoryBaseAddress=0x%Lx MemoryLength=0x%Lx\n",
++    __func__,
++    MemoryBaseAddress,
++    MemoryLength
++    ));
++
++  //
++  // Report DXE Core image information to the PE/COFF Extra Action Library
++  //
++  ZeroMem (&ImageContext, sizeof (ImageContext));
++  ImageContext.ImageAddress  = (EFI_PHYSICAL_ADDRESS)(UINTN)gDxeCoreLoadedImage->ImageBase;
++  ImageContext.PdbPointer    = PeCoffLoaderGetPdbPointer ((VOID *)(UINTN)ImageContext.ImageAddress);
++  ImageContext.SizeOfHeaders = PeCoffGetSizeOfHeaders ((VOID *)(UINTN)ImageContext.ImageAddress);
++  Status                     = PeCoffLoaderGetEntryPoint ((VOID *)(UINTN)ImageContext.ImageAddress, &EntryPoint);
++  if (Status == EFI_SUCCESS) {
++    ImageContext.EntryPoint = (EFI_PHYSICAL_ADDRESS)(UINTN)EntryPoint;
++  }
++
++  ImageContext.Handle    = (VOID *)(UINTN)gDxeCoreLoadedImage->ImageBase;
++  ImageContext.ImageRead = PeCoffLoaderImageReadFromMemory;
++  PeCoffLoaderRelocateImageExtraAction (&ImageContext);
++
++  //
++  // Install the DXE Services Table into the EFI System Tables's Configuration Table
++  //
++  Status = CoreInstallConfigurationTable (&gEfiDxeServicesTableGuid, gDxeCoreDS);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Install the HOB List into the EFI System Tables's Configuration Table
++  //
++  Status = CoreInstallConfigurationTable (&gEfiHobListGuid, HobStart);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Install Memory Type Information Table into the EFI System Tables's Configuration Table
++  //
++  Status = CoreInstallConfigurationTable (&gEfiMemoryTypeInformationGuid, &gMemoryTypeInformation);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // If Loading modules At fixed address feature is enabled, install Load moduels at fixed address
++  // Configuration Table so that user could easily to retrieve the top address to load Dxe and PEI
++  // Code and Tseg base to load SMM driver.
++  //
++  if (PcdGet64 (PcdLoadModuleAtFixAddressEnable) != 0) {
++    Status = CoreInstallConfigurationTable (&gLoadFixedAddressConfigurationTableGuid, &gLoadModuleAtFixAddressConfigurationTable);
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  //
++  // Report Status Code here for DXE_ENTRY_POINT once it is available
++  //
++  REPORT_STATUS_CODE (
++    EFI_PROGRESS_CODE,
++    (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_PC_ENTRY_POINT)
++    );
++
++  //
++  // Create the aligned system table pointer structure that is used by external
++  // debuggers to locate the system table...  Also, install debug image info
++  // configuration table.
++  //
++  CoreInitializeDebugImageInfoTable ();
++  CoreNewDebugImageInfoEntry (
++    EFI_DEBUG_IMAGE_INFO_TYPE_NORMAL,
++    gDxeCoreLoadedImage,
++    gDxeCoreImageHandle
++    );
++
++  DEBUG ((DEBUG_INFO | DEBUG_LOAD, "HOBLIST address in DXE = 0x%p\n", HobStart));
++
++  DEBUG_CODE_BEGIN ();
++  EFI_PEI_HOB_POINTERS  Hob;
++
++  for (Hob.Raw = HobStart; !END_OF_HOB_LIST (Hob); Hob.Raw = GET_NEXT_HOB (Hob)) {
++    if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_MEMORY_ALLOCATION) {
++      DEBUG ((
++        DEBUG_INFO | DEBUG_LOAD,
++        "Memory Allocation 0x%08x 0x%0lx - 0x%0lx\n", \
++        Hob.MemoryAllocation->AllocDescriptor.MemoryType,                      \
++        Hob.MemoryAllocation->AllocDescriptor.MemoryBaseAddress,               \
++        Hob.MemoryAllocation->AllocDescriptor.MemoryBaseAddress + Hob.MemoryAllocation->AllocDescriptor.MemoryLength - 1
++        ));
++    }
++  }
++
++  for (Hob.Raw = HobStart; !END_OF_HOB_LIST (Hob); Hob.Raw = GET_NEXT_HOB (Hob)) {
++    if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV) {
++      DEBUG ((
++        DEBUG_INFO | DEBUG_LOAD,
++        "FV Hob            0x%0lx - 0x%0lx\n",
++        Hob.FirmwareVolume->BaseAddress,
++        Hob.FirmwareVolume->BaseAddress + Hob.FirmwareVolume->Length - 1
++        ));
++    } else if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV2) {
++      DEBUG ((
++        DEBUG_INFO | DEBUG_LOAD,
++        "FV2 Hob           0x%0lx - 0x%0lx\n",
++        Hob.FirmwareVolume2->BaseAddress,
++        Hob.FirmwareVolume2->BaseAddress + Hob.FirmwareVolume2->Length - 1
++        ));
++      DEBUG ((
++        DEBUG_INFO | DEBUG_LOAD,
++        "                  %g - %g\n",
++        &Hob.FirmwareVolume2->FvName,
++        &Hob.FirmwareVolume2->FileName
++        ));
++    } else if (GET_HOB_TYPE (Hob) == EFI_HOB_TYPE_FV3) {
++      DEBUG ((
++        DEBUG_INFO | DEBUG_LOAD,
++        "FV3 Hob           0x%0lx - 0x%0lx - 0x%x - 0x%x\n",
++        Hob.FirmwareVolume3->BaseAddress,
++        Hob.FirmwareVolume3->BaseAddress + Hob.FirmwareVolume3->Length - 1,
++        Hob.FirmwareVolume3->AuthenticationStatus,
++        Hob.FirmwareVolume3->ExtractedFv
++        ));
++      if (Hob.FirmwareVolume3->ExtractedFv) {
++        DEBUG ((
++          DEBUG_INFO | DEBUG_LOAD,
++          "                  %g - %g\n",
++          &Hob.FirmwareVolume3->FvName,
++          &Hob.FirmwareVolume3->FileName
++          ));
++      }
++    }
++  }
++
++  DEBUG_CODE_END ();
++
++  //
++  // Initialize the Event Services
++  //
++  Status = CoreInitializeEventServices ();
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Give the debug agent a chance to initialize with events.
++  //
++  InitializeDebugAgent (DEBUG_AGENT_INIT_DXE_CORE_LATE, HobStart, NULL);
++
++  MemoryProfileInstallProtocol ();
++
++  CoreInitializeMemoryAttributesTable ();
++  CoreInitializeMemoryProtection ();
++
++  //
++  // Get persisted vector hand-off info from GUIDeed HOB again due to HobStart may be updated,
++  // and install configuration table
++  //
++  GuidHob = GetNextGuidHob (&gEfiVectorHandoffInfoPpiGuid, HobStart);
++  if (GuidHob != NULL) {
++    VectorInfoList = (EFI_VECTOR_HANDOFF_INFO *)(GET_GUID_HOB_DATA (GuidHob));
++    VectorInfo     = VectorInfoList;
++    Index          = 1;
++    while (VectorInfo->Attribute != EFI_VECTOR_HANDOFF_LAST_ENTRY) {
++      VectorInfo++;
++      Index++;
++    }
++
++    VectorInfo = AllocateCopyPool (sizeof (EFI_VECTOR_HANDOFF_INFO) * Index, (VOID *)VectorInfoList);
++    ASSERT (VectorInfo != NULL);
++    Status = CoreInstallConfigurationTable (&gEfiVectorHandoffTableGuid, (VOID *)VectorInfo);
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  //
++  // Get the Protocols that were passed in from PEI to DXE through GUIDed HOBs
++  //
++  // These Protocols are not architectural. This implementation is sharing code between
++  // PEI and DXE in order to save FLASH space. These Protocols could also be implemented
++  // as part of the DXE Core. However, that would also require the DXE Core to be ported
++  // each time a different CPU is used, a different Decompression algorithm is used, or a
++  // different Image type is used. By placing these Protocols in PEI, the DXE Core remains
++  // generic, and only PEI and the Arch Protocols need to be ported from Platform to Platform,
++  // and from CPU to CPU.
++  //
++
++  //
++  // Publish the EFI, Tiano, and Custom Decompress protocols for use by other DXE components
++  //
++  Status = CoreInstallMultipleProtocolInterfaces (
++             &mDecompressHandle,
++             &gEfiDecompressProtocolGuid,
++             &gEfiDecompress,
++             NULL
++             );
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Register for the GUIDs of the Architectural Protocols, so the rest of the
++  // EFI Boot Services and EFI Runtime Services tables can be filled in.
++  // Also register for the GUIDs of optional protocols.
++  //
++  CoreNotifyOnProtocolInstallation ();
++
++  //
++  // Produce Firmware Volume Protocols, one for each FV in the HOB list.
++  //
++  Status = FwVolBlockDriverInit (gDxeCoreImageHandle, gDxeCoreST);
++  ASSERT_EFI_ERROR (Status);
++
++  Status = FwVolDriverInit (gDxeCoreImageHandle, gDxeCoreST);
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Produce the Section Extraction Protocol
++  //
++  Status = InitializeSectionExtraction (gDxeCoreImageHandle, gDxeCoreST);
++  ASSERT_EFI_ERROR (Status);
++
++  // MU_CHANGE [BEGIN] - Support all TPLs
++  //
++  // Produce Internal Event Services
++  //
++  if (FeaturePcdGet (PcdInternalEventServicesEnabled)) {
++    Status = InternalEventServicesInit ();
++    ASSERT_EFI_ERROR (Status);
++  }
++
++  // MU_CHANGE [END] - Support all TPLs
++
++  //
++  // Initialize the DXE Dispatcher
++  //
++  CoreInitializeDispatcher ();
++
++  //
++  // Invoke the DXE Dispatcher
++  //
++  CoreDispatcher ();
++
++  //
++  // Display Architectural protocols that were not loaded if this is DEBUG build
++  //
++  DEBUG_CODE_BEGIN ();
++  CoreDisplayMissingArchProtocols ();
++  DEBUG_CODE_END ();
++
++  //
++  // Display any drivers that were not dispatched because dependency expression
++  // evaluated to false if this is a debug build
++  //
++  DEBUG_CODE_BEGIN ();
++  CoreDisplayDiscoveredNotDispatched ();
++  DEBUG_CODE_END ();
++
++  //
++  // Assert if the Architectural Protocols are not present.
++  //
++  Status = CoreAllEfiServicesAvailable ();
++  if (EFI_ERROR (Status)) {
++    //
++    // Report Status code that some Architectural Protocols are not present.
++    //
++    REPORT_STATUS_CODE (
++      EFI_ERROR_CODE | EFI_ERROR_MAJOR,
++      (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_EC_NO_ARCH)
++      );
++  }
++
++  ASSERT_EFI_ERROR (Status);
++
++  //
++  // Report Status code before transfer control to BDS
++  //
++  REPORT_STATUS_CODE (
++    EFI_PROGRESS_CODE,
++    (EFI_SOFTWARE_DXE_CORE | EFI_SW_DXE_CORE_PC_HANDOFF_TO_NEXT)
++    );
++
++  //
++  // Transfer control to the BDS Architectural Protocol
++  //
++  gBds->Entry (gBds);
++
++  //
++  // BDS should never return
++  //
++  ASSERT (FALSE);
++  CpuDeadLoop ();
++
++  UNREACHABLE ();
++}
++
++/**
++  Place holder function until all the Boot Services and Runtime Services are
++  available.
++
++  @param  Arg1                   Undefined
++
++  @return EFI_NOT_AVAILABLE_YET
++
++**/
++EFI_STATUS
++EFIAPI
++CoreEfiNotAvailableYetArg1 (
++  UINTN  Arg1
++  )
++{
++  //
++  // This function should never be executed.  If it does, then the architectural protocols
++  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
++  // DXE Core and all the Architectural Protocols are complete.
++  //
++
++  return EFI_NOT_AVAILABLE_YET;
++}
++
++/**
++  Place holder function until all the Boot Services and Runtime Services are available.
++
++  @param  Arg1                   Undefined
++  @param  Arg2                   Undefined
++
++  @return EFI_NOT_AVAILABLE_YET
++
++**/
++EFI_STATUS
++EFIAPI
++CoreEfiNotAvailableYetArg2 (
++  UINTN  Arg1,
++  UINTN  Arg2
++  )
++{
++  //
++  // This function should never be executed.  If it does, then the architectural protocols
++  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
++  // DXE Core and all the Architectural Protocols are complete.
++  //
++
++  return EFI_NOT_AVAILABLE_YET;
++}
++
++/**
++  Place holder function until all the Boot Services and Runtime Services are available.
++
++  @param  Arg1                   Undefined
++  @param  Arg2                   Undefined
++  @param  Arg3                   Undefined
++
++  @return EFI_NOT_AVAILABLE_YET
++
++**/
++EFI_STATUS
++EFIAPI
++CoreEfiNotAvailableYetArg3 (
++  UINTN  Arg1,
++  UINTN  Arg2,
++  UINTN  Arg3
++  )
++{
++  //
++  // This function should never be executed.  If it does, then the architectural protocols
++  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
++  // DXE Core and all the Architectural Protocols are complete.
++  //
++
++  return EFI_NOT_AVAILABLE_YET;
++}
++
++/**
++  Place holder function until all the Boot Services and Runtime Services are available.
++
++  @param  Arg1                   Undefined
++  @param  Arg2                   Undefined
++  @param  Arg3                   Undefined
++  @param  Arg4                   Undefined
++
++  @return EFI_NOT_AVAILABLE_YET
++
++**/
++EFI_STATUS
++EFIAPI
++CoreEfiNotAvailableYetArg4 (
++  UINTN  Arg1,
++  UINTN  Arg2,
++  UINTN  Arg3,
++  UINTN  Arg4
++  )
++{
++  //
++  // This function should never be executed.  If it does, then the architectural protocols
++  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
++  // DXE Core and all the Architectural Protocols are complete.
++  //
++
++  return EFI_NOT_AVAILABLE_YET;
++}
++
++/**
++  Place holder function until all the Boot Services and Runtime Services are available.
++
++  @param  Arg1                   Undefined
++  @param  Arg2                   Undefined
++  @param  Arg3                   Undefined
++  @param  Arg4                   Undefined
++  @param  Arg5                   Undefined
++
++  @return EFI_NOT_AVAILABLE_YET
++
++**/
++EFI_STATUS
++EFIAPI
++CoreEfiNotAvailableYetArg5 (
++  UINTN  Arg1,
++  UINTN  Arg2,
++  UINTN  Arg3,
++  UINTN  Arg4,
++  UINTN  Arg5
++  )
++{
++  //
++  // This function should never be executed.  If it does, then the architectural protocols
++  // have not been designed correctly.  The CpuBreakpoint () is commented out for now until the
++  // DXE Core and all the Architectural Protocols are complete.
++  //
++
++  return EFI_NOT_AVAILABLE_YET;
++}
++
++/**
++  Calcualte the 32-bit CRC in a EFI table using the service provided by the
++  gRuntime service.
++
++  @param  Hdr                    Pointer to an EFI standard header
++
++**/
++VOID
++CalculateEfiHdrCrc (
++  IN  OUT EFI_TABLE_HEADER  *Hdr
++  )
++{
++  UINT32  Crc;
++
++  Hdr->CRC32 = 0;
++
++  //
++  // If gBS->CalculateCrce32 () == CoreEfiNotAvailableYet () then
++  //  Crc will come back as zero if we set it to zero here
++  //
++  Crc = 0;
++  gBS->CalculateCrc32 ((UINT8 *)Hdr, Hdr->HeaderSize, &Crc);
++  Hdr->CRC32 = Crc;
++}
++
++/**
++  Terminates all boot services.
++
++  @param  ImageHandle            Handle that identifies the exiting image.
++  @param  MapKey                 Key to the latest memory map.
++
++  @retval EFI_SUCCESS            Boot Services terminated
++  @retval EFI_INVALID_PARAMETER  MapKey is incorrect.
++
++**/
++EFI_STATUS
++EFIAPI
++CoreExitBootServices (
++  IN EFI_HANDLE  ImageHandle,
++  IN UINTN       MapKey
++  )
++{
++  EFI_STATUS  Status;
++
++  DEBUG ((EFI_D_INFO, "EBS-TRACE: ExitBootServices entered, MapKey=%lx\n", (UINT64)MapKey));
++
++  //
++  // Notify other drivers of their last chance to use boot services
++  // before the memory map is terminated.
++  //
++  if (!mExitBootServicesCalled) {
++    CoreNotifySignalList (&gEfiEventBeforeExitBootServicesGuid);
++    mExitBootServicesCalled = TRUE;
++  }
++
++  //
++  // Disable Timer
++  //
++  gTimer->SetTimerPeriod (gTimer, 0);
++
++  //
++  // Terminate memory services if the MapKey matches
++  //
++  Status = CoreTerminateMemoryMap (MapKey);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_INFO, "EBS-TRACE: TerminateMemoryMap failed %r, retry expected\n", Status));
++    //
++    // Notify other drivers that ExitBootServices fail
++    //
++    CoreNotifySignalList (&gEventExitBootServicesFailedGuid);
++    return Status;
++  }
++
++  gMemoryMapTerminated = TRUE;
++
++  //
++  // Notify other drivers that we are exiting boot services.
++  //
++  CoreNotifySignalList (&gEfiEventExitBootServicesGuid);
++
++  //
++  // Report that ExitBootServices() has been called
++  //
++  REPORT_STATUS_CODE (
++    EFI_PROGRESS_CODE,
++    (EFI_SOFTWARE_EFI_BOOT_SERVICE | EFI_SW_BS_PC_EXIT_BOOT_SERVICES)
++    );
++
++  MemoryProtectionExitBootServicesCallback ();
++
++  DEBUG ((EFI_D_INFO, "EBS-TRACE: map terminated, leaving firmware\n"));
++
++  //
++  // Disable interrupt of Debug timer.
++  //
++  SaveAndSetDebugTimerInterrupt (FALSE);
++
++  //
++  // Disable CPU Interrupts
++  //
++  gCpu->DisableInterrupt (gCpu);
++
++  //
++  // Clear the non-runtime values of the EFI System Table
++  //
++  gDxeCoreST->BootServices        = NULL;
++  gDxeCoreST->ConIn               = NULL;
++  gDxeCoreST->ConsoleInHandle     = NULL;
++  gDxeCoreST->ConOut              = NULL;
++  gDxeCoreST->ConsoleOutHandle    = NULL;
++  gDxeCoreST->StdErr              = NULL;
++  gDxeCoreST->StandardErrorHandle = NULL;
++
++  //
++  // Recompute the 32-bit CRC of the EFI System Table
++  //
++  CalculateEfiHdrCrc (&gDxeCoreST->Hdr);
++
++  //
++  // Zero out the Boot Service Table
++  //
++  ZeroMem (gBS, sizeof (EFI_BOOT_SERVICES));
++  gBS = NULL;
++
++  //
++  // Update the AtRuntime field in Runtiem AP.
++  //
++  gRuntime->AtRuntime = TRUE;
++
++  return Status;
++}
++
++/**
++  Given a compressed source buffer, this function retrieves the size of the
++  uncompressed buffer and the size of the scratch buffer required to decompress
++  the compressed source buffer.
++
++  The GetInfo() function retrieves the size of the uncompressed buffer and the
++  temporary scratch buffer required to decompress the buffer specified by Source
++  and SourceSize. If the size of the uncompressed buffer or the size of the
++  scratch buffer cannot be determined from the compressed data specified by
++  Source and SourceData, then EFI_INVALID_PARAMETER is returned. Otherwise, the
++  size of the uncompressed buffer is returned in DestinationSize, the size of
++  the scratch buffer is returned in ScratchSize, and EFI_SUCCESS is returned.
++  The GetInfo() function does not have scratch buffer available to perform a
++  thorough checking of the validity of the source data. It just retrieves the
++  "Original Size" field from the beginning bytes of the source data and output
++  it as DestinationSize. And ScratchSize is specific to the decompression
++  implementation.
++
++  @param  This               A pointer to the EFI_DECOMPRESS_PROTOCOL instance.
++  @param  Source             The source buffer containing the compressed data.
++  @param  SourceSize         The size, in bytes, of the source buffer.
++  @param  DestinationSize    A pointer to the size, in bytes, of the
++                             uncompressed buffer that will be generated when the
++                             compressed buffer specified by Source and
++                             SourceSize is decompressed.
++  @param  ScratchSize        A pointer to the size, in bytes, of the scratch
++                             buffer that is required to decompress the
++                             compressed buffer specified by Source and
++                             SourceSize.
++
++  @retval EFI_SUCCESS        The size of the uncompressed data was returned in
++                             DestinationSize and the size of the scratch buffer
++                             was returned in ScratchSize.
++  @retval EFI_INVALID_PARAMETER The size of the uncompressed data or the size of
++                                the scratch buffer cannot be determined from the
++                                compressed data specified by Source and
++                                SourceSize.
++
++**/
++EFI_STATUS
++EFIAPI
++DxeMainUefiDecompressGetInfo (
++  IN EFI_DECOMPRESS_PROTOCOL  *This,
++  IN   VOID                   *Source,
++  IN   UINT32                 SourceSize,
++  OUT  UINT32                 *DestinationSize,
++  OUT  UINT32                 *ScratchSize
++  )
++{
++  if ((Source == NULL) || (DestinationSize == NULL) || (ScratchSize == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  return UefiDecompressGetInfo (Source, SourceSize, DestinationSize, ScratchSize);
++}
++
++/**
++  Decompresses a compressed source buffer.
++
++  The Decompress() function extracts decompressed data to its original form.
++  This protocol is designed so that the decompression algorithm can be
++  implemented without using any memory services. As a result, the Decompress()
++  Function is not allowed to call AllocatePool() or AllocatePages() in its
++  implementation. It is the caller's responsibility to allocate and free the
++  Destination and Scratch buffers.
++  If the compressed source data specified by Source and SourceSize is
++  successfully decompressed into Destination, then EFI_SUCCESS is returned. If
++  the compressed source data specified by Source and SourceSize is not in a
++  valid compressed data format, then EFI_INVALID_PARAMETER is returned.
++
++  @param  This                A pointer to the EFI_DECOMPRESS_PROTOCOL instance.
++  @param  Source              The source buffer containing the compressed data.
++  @param  SourceSize          SourceSizeThe size of source data.
++  @param  Destination         On output, the destination buffer that contains
++                              the uncompressed data.
++  @param  DestinationSize     The size of the destination buffer.  The size of
++                              the destination buffer needed is obtained from
++                              EFI_DECOMPRESS_PROTOCOL.GetInfo().
++  @param  Scratch             A temporary scratch buffer that is used to perform
++                              the decompression.
++  @param  ScratchSize         The size of scratch buffer. The size of the
++                              scratch buffer needed is obtained from GetInfo().
++
++  @retval EFI_SUCCESS         Decompression completed successfully, and the
++                              uncompressed buffer is returned in Destination.
++  @retval EFI_INVALID_PARAMETER  The source buffer specified by Source and
++                                 SourceSize is corrupted (not in a valid
++                                 compressed format).
++
++**/
++EFI_STATUS
++EFIAPI
++DxeMainUefiDecompress (
++  IN     EFI_DECOMPRESS_PROTOCOL  *This,
++  IN     VOID                     *Source,
++  IN     UINT32                   SourceSize,
++  IN OUT VOID                     *Destination,
++  IN     UINT32                   DestinationSize,
++  IN OUT VOID                     *Scratch,
++  IN     UINT32                   ScratchSize
++  )
++{
++  EFI_STATUS  Status;
++  UINT32      TestDestinationSize;
++  UINT32      TestScratchSize;
++
++  if ((Source == NULL) || (Destination == NULL) || (Scratch == NULL)) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status = UefiDecompressGetInfo (Source, SourceSize, &TestDestinationSize, &TestScratchSize);
++  if (EFI_ERROR (Status)) {
++    return Status;
++  }
++
++  if ((ScratchSize < TestScratchSize) || (DestinationSize < TestDestinationSize)) {
++    return RETURN_INVALID_PARAMETER;
++  }
++
++  return UefiDecompress (Source, Destination, Scratch);
++}
+diff --git a/MdeModulePkg/Core/RuntimeDxe/Runtime.c b/MdeModulePkg/Core/RuntimeDxe/Runtime.c
+index c66ed71e35..deaeb5dfe0 100644
+--- a/MdeModulePkg/Core/RuntimeDxe/Runtime.c
++++ b/MdeModulePkg/Core/RuntimeDxe/Runtime.c
+@@ -1,436 +1,438 @@
+-/** @file
+-  This file implements Runtime Architectural Protocol as defined in the
+-  Platform Initialization specification 1.0 VOLUME 2 DXE Core Interface.
+-
+-  This code is used to produce the EFI runtime virtual switch over
+-
+-  THIS IS VERY DANGEROUS CODE BE VERY CAREFUL IF YOU CHANGE IT
+-
+-  The transition for calling EFI Runtime functions in physical mode to calling
+-  them in virtual mode is very very complex. Every pointer in needs to be
+-  converted from physical mode to virtual mode. Be very careful walking linked
+-  lists! Then to make it really hard the code it's self needs be relocated into
+-  the new virtual address space.
+-
+-  So here is the concept. The code in this module will never ever be called in
+-  virtual mode. This is the code that collects the information needed to convert
+-  to virtual mode (DXE core registers runtime stuff with this code). Since this
+-  code is used to fix up all runtime images, it CAN NOT fix it's self up. So some
+-  code has to stay behind and that is us.
+-
+-  Also you need to be careful about when you allocate memory, as once we are in
+-  runtime (including our EVT_SIGNAL_EXIT_BOOT_SERVICES event) you can no longer
+-  allocate memory.
+-
+-  Any runtime driver that gets loaded before us will not be callable in virtual
+-  mode. This is due to the fact that the DXE core can not register the info
+-  needed with us. This is good, since it keeps the code in this file from
+-  getting registered.
+-
+-
+-Revision History:
+-
+-  - Move the CalculateCrc32 function from Runtime Arch Protocol to Boot Service.
+-  Runtime Arch Protocol definition no longer contains CalculateCrc32. Boot Service
+-  Table now contains an item named CalculateCrc32.
+-
+-
+-Copyright (c) 2006 - 2015, Intel Corporation. All rights reserved.<BR>
+-SPDX-License-Identifier: BSD-2-Clause-Patent
+-
+-**/
+-
+-#include "Runtime.h"
+-
+-//
+-// Global Variables
+-//
+-EFI_MEMORY_DESCRIPTOR  *mVirtualMap = NULL;
+-UINTN                  mVirtualMapDescriptorSize;
+-UINTN                  mVirtualMapMaxIndex;
+-VOID                   *mMyImageBase;
+-
+-//
+-// The handle onto which the Runtime Architectural Protocol instance is installed
+-//
+-EFI_HANDLE  mRuntimeHandle = NULL;
+-
+-//
+-// The Runtime Architectural Protocol instance produced by this driver
+-//
+-EFI_RUNTIME_ARCH_PROTOCOL  mRuntime = {
+-  INITIALIZE_LIST_HEAD_VARIABLE (mRuntime.ImageHead),
+-  INITIALIZE_LIST_HEAD_VARIABLE (mRuntime.EventHead),
+-
+-  //
+-  // Make sure Size != sizeof (EFI_MEMORY_DESCRIPTOR). This will
+-  // prevent people from having pointer math bugs in their code.
+-  // now you have to use *DescriptorSize to make things work.
+-  //
+-  sizeof (EFI_MEMORY_DESCRIPTOR) + sizeof (UINT64) - (sizeof (EFI_MEMORY_DESCRIPTOR) % sizeof (UINT64)),
+-  EFI_MEMORY_DESCRIPTOR_VERSION,
+-  0,
+-  NULL,
+-  NULL,
+-  FALSE,
+-  FALSE
+-};
+-
+-//
+-// Worker Functions
+-//
+-
+-/**
+-
+-  Calculate the 32-bit CRC in a EFI table using the Runtime Drivers
+-  internal function.  The EFI Boot Services Table can not be used because
+-  the EFI Boot Services Table was destroyed at ExitBootServices().
+-  This is a internal function.
+-
+-
+-  @param Hdr             Pointer to an EFI standard header
+-
+-**/
+-VOID
+-RuntimeDriverCalculateEfiHdrCrc (
+-  IN OUT EFI_TABLE_HEADER  *Hdr
+-  )
+-{
+-  UINT32  Crc;
+-
+-  Hdr->CRC32 = 0;
+-
+-  Crc = 0;
+-  RuntimeDriverCalculateCrc32 ((UINT8 *)Hdr, Hdr->HeaderSize, &Crc);
+-  Hdr->CRC32 = Crc;
+-}
+-
+-/**
+-
+-  Determines the new virtual address that is to be used on subsequent memory accesses.
+-
+-
+-  @param DebugDisposition Supplies type information for the pointer being converted.
+-  @param ConvertAddress  A pointer to a pointer that is to be fixed to be the value needed
+-                         for the new virtual address mappings being applied.
+-
+-  @retval  EFI_SUCCESS              The pointer pointed to by Address was modified.
+-  @retval  EFI_NOT_FOUND            The pointer pointed to by Address was not found to be part
+-                                    of the current memory map. This is normally fatal.
+-  @retval  EFI_INVALID_PARAMETER    1) Address is NULL.
+-                                    2) *Address is NULL and DebugDisposition does
+-                                    not have the EFI_OPTIONAL_PTR bit set.
+-  @retval  EFI_UNSUPPORTED          This call is not supported by this platform at the time the call is made.
+-                                    The platform should describe this runtime service as unsupported at runtime
+-                                    via an EFI_RT_PROPERTIES_TABLE configuration table.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-RuntimeDriverConvertPointer (
+-  IN     UINTN  DebugDisposition,
+-  IN OUT VOID   **ConvertAddress
+-  )
+-{
+-  UINTN                  Address;
+-  UINT64                 VirtEndOfRange;
+-  EFI_MEMORY_DESCRIPTOR  *VirtEntry;
+-  UINTN                  Index;
+-
+-  //
+-  // Make sure ConvertAddress is a valid pointer
+-  //
+-  if (ConvertAddress == NULL) {
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  //
+-  // Get the address to convert
+-  //
+-  Address = (UINTN)*ConvertAddress;
+-
+-  //
+-  // If this is a null pointer, return if it's allowed
+-  //
+-  if (Address == 0) {
+-    if ((DebugDisposition & EFI_OPTIONAL_PTR) != 0) {
+-      return EFI_SUCCESS;
+-    }
+-
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  VirtEntry = mVirtualMap;
+-  for (Index = 0; Index < mVirtualMapMaxIndex; Index++) {
+-    //
+-    //  To prevent the inclusion of 64-bit math functions a UINTN was placed in
+-    //  front of VirtEntry->NumberOfPages to cast it to a 32-bit thing on IA-32
+-    //  platforms. If you get this ASSERT remove the UINTN and do a 64-bit
+-    //  multiply.
+-    //
+-    ASSERT (((UINTN)VirtEntry->NumberOfPages < 0xffffffff) || (sizeof (UINTN) > 4));
+-
+-    if ((VirtEntry->Attribute & EFI_MEMORY_RUNTIME) == EFI_MEMORY_RUNTIME) {
+-      if (Address >= VirtEntry->PhysicalStart) {
+-        VirtEndOfRange = VirtEntry->PhysicalStart + (((UINTN)VirtEntry->NumberOfPages) * EFI_PAGE_SIZE);
+-        if (Address < VirtEndOfRange) {
+-          //
+-          // Compute new address
+-          //
+-          *ConvertAddress = (VOID *)(Address - (UINTN)VirtEntry->PhysicalStart + (UINTN)VirtEntry->VirtualStart);
+-          return EFI_SUCCESS;
+-        }
+-      }
+-    }
+-
+-    VirtEntry = NEXT_MEMORY_DESCRIPTOR (VirtEntry, mVirtualMapDescriptorSize);
+-  }
+-
+-  return EFI_NOT_FOUND;
+-}
+-
+-/**
+-
+-  Determines the new virtual address that is to be used on subsequent memory accesses
+-  for internal pointers.
+-  This is a internal function.
+-
+-
+-  @param ConvertAddress  A pointer to a pointer that is to be fixed to be the value needed
+-                         for the new virtual address mappings being applied.
+-
+-  @retval  EFI_SUCCESS              The pointer pointed to by Address was modified.
+-  @retval  EFI_NOT_FOUND            The pointer pointed to by Address was not found to be part
+-                                    of the current memory map. This is normally fatal.
+-  @retval  EFI_INVALID_PARAMETER    One of the parameters has an invalid value.
+-
+-**/
+-EFI_STATUS
+-RuntimeDriverConvertInternalPointer (
+-  IN OUT VOID  **ConvertAddress
+-  )
+-{
+-  return RuntimeDriverConvertPointer (0x0, ConvertAddress);
+-}
+-
+-/**
+-
+-  Changes the runtime addressing mode of EFI firmware from physical to virtual.
+-
+-
+-  @param MemoryMapSize   The size in bytes of VirtualMap.
+-  @param DescriptorSize  The size in bytes of an entry in the VirtualMap.
+-  @param DescriptorVersion The version of the structure entries in VirtualMap.
+-  @param VirtualMap      An array of memory descriptors which contain new virtual
+-                         address mapping information for all runtime ranges.
+-
+-  @retval  EFI_SUCCESS            The virtual address map has been applied.
+-  @retval  EFI_UNSUPPORTED        EFI firmware is not at runtime, or the EFI firmware is already in
+-                                  virtual address mapped mode.
+-  @retval  EFI_INVALID_PARAMETER  DescriptorSize or DescriptorVersion is invalid.
+-  @retval  EFI_NO_MAPPING         A virtual address was not supplied for a range in the memory
+-                                  map that requires a mapping.
+-  @retval  EFI_NOT_FOUND          A virtual address was supplied for an address that is not found
+-                                  in the memory map.
+-  @retval  EFI_UNSUPPORTED        This call is not supported by this platform at the time the call is made.
+-                                  The platform should describe this runtime service as unsupported at runtime
+-                                  via an EFI_RT_PROPERTIES_TABLE configuration table.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-RuntimeDriverSetVirtualAddressMap (
+-  IN UINTN                  MemoryMapSize,
+-  IN UINTN                  DescriptorSize,
+-  IN UINT32                 DescriptorVersion,
+-  IN EFI_MEMORY_DESCRIPTOR  *VirtualMap
+-  )
+-{
+-  EFI_STATUS               Status;
+-  EFI_RUNTIME_EVENT_ENTRY  *RuntimeEvent;
+-  EFI_RUNTIME_IMAGE_ENTRY  *RuntimeImage;
+-  LIST_ENTRY               *Link;
+-  EFI_PHYSICAL_ADDRESS     VirtImageBase;
+-
+-  //
+-  // Can only switch to virtual addresses once the memory map is locked down,
+-  // and can only set it once
+-  //
+-  if (!mRuntime.AtRuntime || mRuntime.VirtualMode) {
+-    return EFI_UNSUPPORTED;
+-  }
+-
+-  //
+-  // Only understand the original descriptor format
+-  //
+-  if ((DescriptorVersion != EFI_MEMORY_DESCRIPTOR_VERSION) || (DescriptorSize < sizeof (EFI_MEMORY_DESCRIPTOR))) {
+-    return EFI_INVALID_PARAMETER;
+-  }
+-
+-  //
+-  // We are now committed to go to virtual mode, so lets get to it!
+-  //
+-  mRuntime.VirtualMode = TRUE;
+-
+-  //
+-  // ConvertPointer() needs this mVirtualMap to do the conversion. So set up
+-  // globals we need to parse the virtual address map.
+-  //
+-  mVirtualMapDescriptorSize = DescriptorSize;
+-  mVirtualMapMaxIndex       = MemoryMapSize / DescriptorSize;
+-  mVirtualMap               = VirtualMap;
+-
+-  //
+-  // ReporstStatusCodeLib will check and make sure this service can be called in runtime mode.
+-  //
+-  REPORT_STATUS_CODE (EFI_PROGRESS_CODE, (EFI_SOFTWARE_EFI_RUNTIME_SERVICE | EFI_SW_RS_PC_SET_VIRTUAL_ADDRESS_MAP));
+-
+-  //
+-  // Report Status Code here since EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE event will be signalled.
+-  //
+-  REPORT_STATUS_CODE (EFI_PROGRESS_CODE, (EFI_SOFTWARE_DXE_BS_DRIVER | EFI_SW_DXE_BS_PC_VIRTUAL_ADDRESS_CHANGE_EVENT));
+-
+-  //
+-  // Signal all the EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE events.
+-  // All runtime events are stored in a list in Runtime AP.
+-  //
+-  for (Link = mRuntime.EventHead.ForwardLink; Link != &mRuntime.EventHead; Link = Link->ForwardLink) {
+-    RuntimeEvent = BASE_CR (Link, EFI_RUNTIME_EVENT_ENTRY, Link);
+-    if ((RuntimeEvent->Type & EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE) == EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE) {
+-      //
+-      // Work around the bug in the Platform Init specification (v1.7),
+-      // reported as Mantis#2017: "EFI_RUNTIME_EVENT_ENTRY.Event" should have
+-      // type EFI_EVENT, not (EFI_EVENT*). The PI spec documents the field
+-      // correctly as "The EFI_EVENT returned by CreateEvent()", but the type
+-      // of the field doesn't match the natural language description. Therefore
+-      // we need an explicit cast here.
+-      //
+-      RuntimeEvent->NotifyFunction (
+-                      (EFI_EVENT)RuntimeEvent->Event,
+-                      RuntimeEvent->NotifyContext
+-                      );
+-    }
+-  }
+-
+-  //
+-  // Relocate runtime images. All runtime images are stored in a list in Runtime AP.
+-  //
+-  for (Link = mRuntime.ImageHead.ForwardLink; Link != &mRuntime.ImageHead; Link = Link->ForwardLink) {
+-    RuntimeImage = BASE_CR (Link, EFI_RUNTIME_IMAGE_ENTRY, Link);
+-    //
+-    // We don't want to relocate our selves, as we only run in physical mode.
+-    //
+-    if (mMyImageBase != RuntimeImage->ImageBase) {
+-      VirtImageBase = (EFI_PHYSICAL_ADDRESS)(UINTN)RuntimeImage->ImageBase;
+-      Status        = RuntimeDriverConvertPointer (0, (VOID **)&VirtImageBase);
+-      ASSERT_EFI_ERROR (Status);
+-
+-      PeCoffLoaderRelocateImageForRuntime (
+-        (EFI_PHYSICAL_ADDRESS)(UINTN)RuntimeImage->ImageBase,
+-        VirtImageBase,
+-        (UINTN)RuntimeImage->ImageSize,
+-        RuntimeImage->RelocationData
+-        );
+-
+-      InvalidateInstructionCacheRange (RuntimeImage->ImageBase, (UINTN)RuntimeImage->ImageSize);
+-    }
+-  }
+-
+-  //
+-  // Convert all the Runtime Services except ConvertPointer() and SetVirtualAddressMap()
+-  // and recompute the CRC-32
+-  //
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetTime);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetTime);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetWakeupTime);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetWakeupTime);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->ResetSystem);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetNextHighMonotonicCount);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetVariable);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetVariable);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetNextVariableName);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->QueryVariableInfo);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->UpdateCapsule);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->QueryCapsuleCapabilities);
+-  RuntimeDriverCalculateEfiHdrCrc (&gRT->Hdr);
+-
+-  //
+-  // UEFI don't require System Configuration Tables Conversion.
+-  //
+-
+-  //
+-  // Convert the runtime fields of the EFI System Table and recompute the CRC-32
+-  //
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gST->FirmwareVendor);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gST->ConfigurationTable);
+-  RuntimeDriverConvertInternalPointer ((VOID **)&gST->RuntimeServices);
+-  RuntimeDriverCalculateEfiHdrCrc (&gST->Hdr);
+-
+-  //
+-  // At this point, gRT and gST are physical pointers, but the contents of these tables
+-  // have been converted to runtime.
+-  //
+-  //
+-  // mVirtualMap is only valid during SetVirtualAddressMap() call
+-  //
+-  mVirtualMap         = NULL;
+-  mVirtualMapMaxIndex = 0;
+-
+-  return EFI_SUCCESS;
+-}
+-
+-/**
+-  Entry Point for Runtime driver.
+-
+-  This function installs Runtime Architectural Protocol and registers CalculateCrc32 boot services table,
+-  SetVirtualAddressMap & ConvertPointer runtime services table.
+-
+-  @param ImageHandle     Image handle of this driver.
+-  @param SystemTable     a Pointer to the EFI System Table.
+-
+-  @retval  EFI_SUCEESS  Runtime Driver Architectural Protocol is successfully installed
+-  @return  Others       Some error occurs when installing Runtime Driver Architectural Protocol.
+-
+-**/
+-EFI_STATUS
+-EFIAPI
+-RuntimeDriverInitialize (
+-  IN EFI_HANDLE        ImageHandle,
+-  IN EFI_SYSTEM_TABLE  *SystemTable
+-  )
+-{
+-  EFI_STATUS                 Status;
+-  EFI_LOADED_IMAGE_PROTOCOL  *MyLoadedImage;
+-
+-  //
+-  // This image needs to be excluded from relocation for virtual mode, so cache
+-  // a copy of the Loaded Image protocol to test later.
+-  //
+-  Status = gBS->HandleProtocol (
+-                  ImageHandle,
+-                  &gEfiLoadedImageProtocolGuid,
+-                  (VOID **)&MyLoadedImage
+-                  );
+-  ASSERT_EFI_ERROR (Status);
+-  mMyImageBase = MyLoadedImage->ImageBase;
+-
+-  //
+-  // Fill in the entries of the EFI Boot Services and EFI Runtime Services Tables
+-  //
+-  gBS->CalculateCrc32       = RuntimeDriverCalculateCrc32;
+-  gRT->SetVirtualAddressMap = RuntimeDriverSetVirtualAddressMap;
+-  gRT->ConvertPointer       = RuntimeDriverConvertPointer;
+-
+-  //
+-  // Install the Runtime Architectural Protocol onto a new handle
+-  //
+-  Status = gBS->InstallMultipleProtocolInterfaces (
+-                  &mRuntimeHandle,
+-                  &gEfiRuntimeArchProtocolGuid,
+-                  &mRuntime,
+-                  NULL
+-                  );
+-  ASSERT_EFI_ERROR (Status);
+-
+-  return Status;
+-}
++/** @file
++  This file implements Runtime Architectural Protocol as defined in the
++  Platform Initialization specification 1.0 VOLUME 2 DXE Core Interface.
++
++  This code is used to produce the EFI runtime virtual switch over
++
++  THIS IS VERY DANGEROUS CODE BE VERY CAREFUL IF YOU CHANGE IT
++
++  The transition for calling EFI Runtime functions in physical mode to calling
++  them in virtual mode is very very complex. Every pointer in needs to be
++  converted from physical mode to virtual mode. Be very careful walking linked
++  lists! Then to make it really hard the code it's self needs be relocated into
++  the new virtual address space.
++
++  So here is the concept. The code in this module will never ever be called in
++  virtual mode. This is the code that collects the information needed to convert
++  to virtual mode (DXE core registers runtime stuff with this code). Since this
++  code is used to fix up all runtime images, it CAN NOT fix it's self up. So some
++  code has to stay behind and that is us.
++
++  Also you need to be careful about when you allocate memory, as once we are in
++  runtime (including our EVT_SIGNAL_EXIT_BOOT_SERVICES event) you can no longer
++  allocate memory.
++
++  Any runtime driver that gets loaded before us will not be callable in virtual
++  mode. This is due to the fact that the DXE core can not register the info
++  needed with us. This is good, since it keeps the code in this file from
++  getting registered.
++
++
++Revision History:
++
++  - Move the CalculateCrc32 function from Runtime Arch Protocol to Boot Service.
++  Runtime Arch Protocol definition no longer contains CalculateCrc32. Boot Service
++  Table now contains an item named CalculateCrc32.
++
++
++Copyright (c) 2006 - 2015, Intel Corporation. All rights reserved.<BR>
++SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#include "Runtime.h"
++
++//
++// Global Variables
++//
++EFI_MEMORY_DESCRIPTOR  *mVirtualMap = NULL;
++UINTN                  mVirtualMapDescriptorSize;
++UINTN                  mVirtualMapMaxIndex;
++VOID                   *mMyImageBase;
++
++//
++// The handle onto which the Runtime Architectural Protocol instance is installed
++//
++EFI_HANDLE  mRuntimeHandle = NULL;
++
++//
++// The Runtime Architectural Protocol instance produced by this driver
++//
++EFI_RUNTIME_ARCH_PROTOCOL  mRuntime = {
++  INITIALIZE_LIST_HEAD_VARIABLE (mRuntime.ImageHead),
++  INITIALIZE_LIST_HEAD_VARIABLE (mRuntime.EventHead),
++
++  //
++  // Make sure Size != sizeof (EFI_MEMORY_DESCRIPTOR). This will
++  // prevent people from having pointer math bugs in their code.
++  // now you have to use *DescriptorSize to make things work.
++  //
++  sizeof (EFI_MEMORY_DESCRIPTOR) + sizeof (UINT64) - (sizeof (EFI_MEMORY_DESCRIPTOR) % sizeof (UINT64)),
++  EFI_MEMORY_DESCRIPTOR_VERSION,
++  0,
++  NULL,
++  NULL,
++  FALSE,
++  FALSE
++};
++
++//
++// Worker Functions
++//
++
++/**
++
++  Calculate the 32-bit CRC in a EFI table using the Runtime Drivers
++  internal function.  The EFI Boot Services Table can not be used because
++  the EFI Boot Services Table was destroyed at ExitBootServices().
++  This is a internal function.
++
++
++  @param Hdr             Pointer to an EFI standard header
++
++**/
++VOID
++RuntimeDriverCalculateEfiHdrCrc (
++  IN OUT EFI_TABLE_HEADER  *Hdr
++  )
++{
++  UINT32  Crc;
++
++  Hdr->CRC32 = 0;
++
++  Crc = 0;
++  RuntimeDriverCalculateCrc32 ((UINT8 *)Hdr, Hdr->HeaderSize, &Crc);
++  Hdr->CRC32 = Crc;
++}
++
++/**
++
++  Determines the new virtual address that is to be used on subsequent memory accesses.
++
++
++  @param DebugDisposition Supplies type information for the pointer being converted.
++  @param ConvertAddress  A pointer to a pointer that is to be fixed to be the value needed
++                         for the new virtual address mappings being applied.
++
++  @retval  EFI_SUCCESS              The pointer pointed to by Address was modified.
++  @retval  EFI_NOT_FOUND            The pointer pointed to by Address was not found to be part
++                                    of the current memory map. This is normally fatal.
++  @retval  EFI_INVALID_PARAMETER    1) Address is NULL.
++                                    2) *Address is NULL and DebugDisposition does
++                                    not have the EFI_OPTIONAL_PTR bit set.
++  @retval  EFI_UNSUPPORTED          This call is not supported by this platform at the time the call is made.
++                                    The platform should describe this runtime service as unsupported at runtime
++                                    via an EFI_RT_PROPERTIES_TABLE configuration table.
++
++**/
++EFI_STATUS
++EFIAPI
++RuntimeDriverConvertPointer (
++  IN     UINTN  DebugDisposition,
++  IN OUT VOID   **ConvertAddress
++  )
++{
++  UINTN                  Address;
++  UINT64                 VirtEndOfRange;
++  EFI_MEMORY_DESCRIPTOR  *VirtEntry;
++  UINTN                  Index;
++
++  //
++  // Make sure ConvertAddress is a valid pointer
++  //
++  if (ConvertAddress == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // Get the address to convert
++  //
++  Address = (UINTN)*ConvertAddress;
++
++  //
++  // If this is a null pointer, return if it's allowed
++  //
++  if (Address == 0) {
++    if ((DebugDisposition & EFI_OPTIONAL_PTR) != 0) {
++      return EFI_SUCCESS;
++    }
++
++    return EFI_INVALID_PARAMETER;
++  }
++
++  VirtEntry = mVirtualMap;
++  for (Index = 0; Index < mVirtualMapMaxIndex; Index++) {
++    //
++    //  To prevent the inclusion of 64-bit math functions a UINTN was placed in
++    //  front of VirtEntry->NumberOfPages to cast it to a 32-bit thing on IA-32
++    //  platforms. If you get this ASSERT remove the UINTN and do a 64-bit
++    //  multiply.
++    //
++    ASSERT (((UINTN)VirtEntry->NumberOfPages < 0xffffffff) || (sizeof (UINTN) > 4));
++
++    if ((VirtEntry->Attribute & EFI_MEMORY_RUNTIME) == EFI_MEMORY_RUNTIME) {
++      if (Address >= VirtEntry->PhysicalStart) {
++        VirtEndOfRange = VirtEntry->PhysicalStart + (((UINTN)VirtEntry->NumberOfPages) * EFI_PAGE_SIZE);
++        if (Address < VirtEndOfRange) {
++          //
++          // Compute new address
++          //
++          *ConvertAddress = (VOID *)(Address - (UINTN)VirtEntry->PhysicalStart + (UINTN)VirtEntry->VirtualStart);
++          return EFI_SUCCESS;
++        }
++      }
++    }
++
++    VirtEntry = NEXT_MEMORY_DESCRIPTOR (VirtEntry, mVirtualMapDescriptorSize);
++  }
++
++  return EFI_NOT_FOUND;
++}
++
++/**
++
++  Determines the new virtual address that is to be used on subsequent memory accesses
++  for internal pointers.
++  This is a internal function.
++
++
++  @param ConvertAddress  A pointer to a pointer that is to be fixed to be the value needed
++                         for the new virtual address mappings being applied.
++
++  @retval  EFI_SUCCESS              The pointer pointed to by Address was modified.
++  @retval  EFI_NOT_FOUND            The pointer pointed to by Address was not found to be part
++                                    of the current memory map. This is normally fatal.
++  @retval  EFI_INVALID_PARAMETER    One of the parameters has an invalid value.
++
++**/
++EFI_STATUS
++RuntimeDriverConvertInternalPointer (
++  IN OUT VOID  **ConvertAddress
++  )
++{
++  return RuntimeDriverConvertPointer (0x0, ConvertAddress);
++}
++
++/**
++
++  Changes the runtime addressing mode of EFI firmware from physical to virtual.
++
++
++  @param MemoryMapSize   The size in bytes of VirtualMap.
++  @param DescriptorSize  The size in bytes of an entry in the VirtualMap.
++  @param DescriptorVersion The version of the structure entries in VirtualMap.
++  @param VirtualMap      An array of memory descriptors which contain new virtual
++                         address mapping information for all runtime ranges.
++
++  @retval  EFI_SUCCESS            The virtual address map has been applied.
++  @retval  EFI_UNSUPPORTED        EFI firmware is not at runtime, or the EFI firmware is already in
++                                  virtual address mapped mode.
++  @retval  EFI_INVALID_PARAMETER  DescriptorSize or DescriptorVersion is invalid.
++  @retval  EFI_NO_MAPPING         A virtual address was not supplied for a range in the memory
++                                  map that requires a mapping.
++  @retval  EFI_NOT_FOUND          A virtual address was supplied for an address that is not found
++                                  in the memory map.
++  @retval  EFI_UNSUPPORTED        This call is not supported by this platform at the time the call is made.
++                                  The platform should describe this runtime service as unsupported at runtime
++                                  via an EFI_RT_PROPERTIES_TABLE configuration table.
++
++**/
++EFI_STATUS
++EFIAPI
++RuntimeDriverSetVirtualAddressMap (
++  IN UINTN                  MemoryMapSize,
++  IN UINTN                  DescriptorSize,
++  IN UINT32                 DescriptorVersion,
++  IN EFI_MEMORY_DESCRIPTOR  *VirtualMap
++  )
++{
++  EFI_STATUS               Status;
++  EFI_RUNTIME_EVENT_ENTRY  *RuntimeEvent;
++  EFI_RUNTIME_IMAGE_ENTRY  *RuntimeImage;
++  LIST_ENTRY               *Link;
++  EFI_PHYSICAL_ADDRESS     VirtImageBase;
++
++  DEBUG ((EFI_D_INFO, "EBS-TRACE: SetVirtualAddressMap called size=%lx dsize=%lx ver=%x\n", (UINT64)MemoryMapSize, (UINT64)DescriptorSize, DescriptorVersion));
++
++  //
++  // Can only switch to virtual addresses once the memory map is locked down,
++  // and can only set it once
++  //
++  if (!mRuntime.AtRuntime || mRuntime.VirtualMode) {
++    return EFI_UNSUPPORTED;
++  }
++
++  //
++  // Only understand the original descriptor format
++  //
++  if ((DescriptorVersion != EFI_MEMORY_DESCRIPTOR_VERSION) || (DescriptorSize < sizeof (EFI_MEMORY_DESCRIPTOR))) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // We are now committed to go to virtual mode, so lets get to it!
++  //
++  mRuntime.VirtualMode = TRUE;
++
++  //
++  // ConvertPointer() needs this mVirtualMap to do the conversion. So set up
++  // globals we need to parse the virtual address map.
++  //
++  mVirtualMapDescriptorSize = DescriptorSize;
++  mVirtualMapMaxIndex       = MemoryMapSize / DescriptorSize;
++  mVirtualMap               = VirtualMap;
++
++  //
++  // ReporstStatusCodeLib will check and make sure this service can be called in runtime mode.
++  //
++  REPORT_STATUS_CODE (EFI_PROGRESS_CODE, (EFI_SOFTWARE_EFI_RUNTIME_SERVICE | EFI_SW_RS_PC_SET_VIRTUAL_ADDRESS_MAP));
++
++  //
++  // Report Status Code here since EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE event will be signalled.
++  //
++  REPORT_STATUS_CODE (EFI_PROGRESS_CODE, (EFI_SOFTWARE_DXE_BS_DRIVER | EFI_SW_DXE_BS_PC_VIRTUAL_ADDRESS_CHANGE_EVENT));
++
++  //
++  // Signal all the EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE events.
++  // All runtime events are stored in a list in Runtime AP.
++  //
++  for (Link = mRuntime.EventHead.ForwardLink; Link != &mRuntime.EventHead; Link = Link->ForwardLink) {
++    RuntimeEvent = BASE_CR (Link, EFI_RUNTIME_EVENT_ENTRY, Link);
++    if ((RuntimeEvent->Type & EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE) == EVT_SIGNAL_VIRTUAL_ADDRESS_CHANGE) {
++      //
++      // Work around the bug in the Platform Init specification (v1.7),
++      // reported as Mantis#2017: "EFI_RUNTIME_EVENT_ENTRY.Event" should have
++      // type EFI_EVENT, not (EFI_EVENT*). The PI spec documents the field
++      // correctly as "The EFI_EVENT returned by CreateEvent()", but the type
++      // of the field doesn't match the natural language description. Therefore
++      // we need an explicit cast here.
++      //
++      RuntimeEvent->NotifyFunction (
++                      (EFI_EVENT)RuntimeEvent->Event,
++                      RuntimeEvent->NotifyContext
++                      );
++    }
++  }
++
++  //
++  // Relocate runtime images. All runtime images are stored in a list in Runtime AP.
++  //
++  for (Link = mRuntime.ImageHead.ForwardLink; Link != &mRuntime.ImageHead; Link = Link->ForwardLink) {
++    RuntimeImage = BASE_CR (Link, EFI_RUNTIME_IMAGE_ENTRY, Link);
++    //
++    // We don't want to relocate our selves, as we only run in physical mode.
++    //
++    if (mMyImageBase != RuntimeImage->ImageBase) {
++      VirtImageBase = (EFI_PHYSICAL_ADDRESS)(UINTN)RuntimeImage->ImageBase;
++      Status        = RuntimeDriverConvertPointer (0, (VOID **)&VirtImageBase);
++      ASSERT_EFI_ERROR (Status);
++
++      PeCoffLoaderRelocateImageForRuntime (
++        (EFI_PHYSICAL_ADDRESS)(UINTN)RuntimeImage->ImageBase,
++        VirtImageBase,
++        (UINTN)RuntimeImage->ImageSize,
++        RuntimeImage->RelocationData
++        );
++
++      InvalidateInstructionCacheRange (RuntimeImage->ImageBase, (UINTN)RuntimeImage->ImageSize);
++    }
++  }
++
++  //
++  // Convert all the Runtime Services except ConvertPointer() and SetVirtualAddressMap()
++  // and recompute the CRC-32
++  //
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetTime);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetTime);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetWakeupTime);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetWakeupTime);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->ResetSystem);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetNextHighMonotonicCount);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetVariable);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->SetVariable);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->GetNextVariableName);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->QueryVariableInfo);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->UpdateCapsule);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gRT->QueryCapsuleCapabilities);
++  RuntimeDriverCalculateEfiHdrCrc (&gRT->Hdr);
++
++  //
++  // UEFI don't require System Configuration Tables Conversion.
++  //
++
++  //
++  // Convert the runtime fields of the EFI System Table and recompute the CRC-32
++  //
++  RuntimeDriverConvertInternalPointer ((VOID **)&gST->FirmwareVendor);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gST->ConfigurationTable);
++  RuntimeDriverConvertInternalPointer ((VOID **)&gST->RuntimeServices);
++  RuntimeDriverCalculateEfiHdrCrc (&gST->Hdr);
++
++  //
++  // At this point, gRT and gST are physical pointers, but the contents of these tables
++  // have been converted to runtime.
++  //
++  //
++  // mVirtualMap is only valid during SetVirtualAddressMap() call
++  //
++  mVirtualMap         = NULL;
++  mVirtualMapMaxIndex = 0;
++
++  return EFI_SUCCESS;
++}
++
++/**
++  Entry Point for Runtime driver.
++
++  This function installs Runtime Architectural Protocol and registers CalculateCrc32 boot services table,
++  SetVirtualAddressMap & ConvertPointer runtime services table.
++
++  @param ImageHandle     Image handle of this driver.
++  @param SystemTable     a Pointer to the EFI System Table.
++
++  @retval  EFI_SUCEESS  Runtime Driver Architectural Protocol is successfully installed
++  @return  Others       Some error occurs when installing Runtime Driver Architectural Protocol.
++
++**/
++EFI_STATUS
++EFIAPI
++RuntimeDriverInitialize (
++  IN EFI_HANDLE        ImageHandle,
++  IN EFI_SYSTEM_TABLE  *SystemTable
++  )
++{
++  EFI_STATUS                 Status;
++  EFI_LOADED_IMAGE_PROTOCOL  *MyLoadedImage;
++
++  //
++  // This image needs to be excluded from relocation for virtual mode, so cache
++  // a copy of the Loaded Image protocol to test later.
++  //
++  Status = gBS->HandleProtocol (
++                  ImageHandle,
++                  &gEfiLoadedImageProtocolGuid,
++                  (VOID **)&MyLoadedImage
++                  );
++  ASSERT_EFI_ERROR (Status);
++  mMyImageBase = MyLoadedImage->ImageBase;
++
++  //
++  // Fill in the entries of the EFI Boot Services and EFI Runtime Services Tables
++  //
++  gBS->CalculateCrc32       = RuntimeDriverCalculateCrc32;
++  gRT->SetVirtualAddressMap = RuntimeDriverSetVirtualAddressMap;
++  gRT->ConvertPointer       = RuntimeDriverConvertPointer;
++
++  //
++  // Install the Runtime Architectural Protocol onto a new handle
++  //
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &mRuntimeHandle,
++                  &gEfiRuntimeArchProtocolGuid,
++                  &mRuntime,
++                  NULL
++                  );
++  ASSERT_EFI_ERROR (Status);
++
++  return Status;
++}
+-- 
+2.43.0
+

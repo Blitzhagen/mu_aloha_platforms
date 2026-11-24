@@ -1,0 +1,293 @@
+From 6223f2c43bb7a9019035727f40abeec28879ed51 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <blitzhagen@users.noreply.github.com>
+Date: Mon, 23 Nov 2026 16:03:41 +0000
+Subject: [PATCH 2/4] MsBootPolicy: CENSUS-Instrumentierung + DEBUG->Print
+ Konvertierung (v144/v145) - lokaler Patch, kein Upstream-Push
+
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 80 ++++++++++++++--------------
+ 1 file changed, 40 insertions(+), 40 deletions(-)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index c27b0d40..a3153774 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -248,12 +248,12 @@ DisplayDevicePaths (
+   for (i = 0; i < HandleCount; i++) {
+     Tmp = ConvertDevicePathToText (DevicePathFromHandle (HandleBuffer[i]), TRUE, TRUE);
+     if (Tmp != NULL) {
+-      DEBUG ((DEBUG_WARN, "%3d %s", i, Tmp));    // Output newline in different call as
++      Print (L"%3d %s", i, Tmp);    // Output newline in different call as
+     } else {
+-      DEBUG ((DEBUG_INFO, "%3d NULL\n", i));
++      Print (L"%3d NULL\n", i);
+     }
+ 
+-    DEBUG ((DEBUG_INFO, "\n"));    // Device Paths can be longer than DEBUG limit.
++    Print (L"\n");    // Device Paths can be longer than DEBUG limit.
+     if (Tmp != NULL) {
+       FreePool (Tmp);
+     }
+@@ -273,13 +273,13 @@ SortHandles (
+   BOOLEAN                   Swap;
+   UINTN                     SwapCount;
+ 
+-  DEBUG ((DEBUG_INFO, "%a\n", __FUNCTION__));
++  Print (L"%a\n", __FUNCTION__);
+   if (HandleCount < 2) {
+     return;
+   }
+ 
+   SwapCount = 0;
+-  DEBUG ((DEBUG_INFO, "SortHandles - Before sorting\n"));
++  Print (L"SortHandles - Before sorting\n");
+   DisplayDevicePaths (HandleBuffer, HandleCount);
+   do {
+     Swap = FALSE;
+@@ -305,9 +305,9 @@ SortHandles (
+     }
+   } while ((Swap == TRUE) && (SwapCount < 50));
+ 
+-  DEBUG ((DEBUG_INFO, "SortHandles - After sorting\n"));
++  Print (L"SortHandles - After sorting\n");
+   DisplayDevicePaths (HandleBuffer, HandleCount);
+-  DEBUG ((DEBUG_INFO, "Exit %a, SwapCount = %d\n", __FUNCTION__, SwapCount));
++  Print (L"Exit %a, SwapCount = %d\n", __FUNCTION__, SwapCount);
+   return;
+ }
+ 
+@@ -326,21 +326,21 @@ DumpHandlesByProtocol (
+ 
+   St = gBS->LocateHandleBuffer (ByProtocol, Guid, NULL, &C, &H);
+   if (EFI_ERROR (St)) {
+-    DEBUG ((DEBUG_WARN, "CENSUS %a: locate failed %r\n", Name, St));
++    Print (L"CENSUS %a: locate failed %r\n", Name, St);
+     return;
+   }
+ 
+-  DEBUG ((DEBUG_WARN, "CENSUS %a: %d handles\n", Name, C));
++  Print (L"CENSUS %a: %d handles\n", Name, C);
+   for (I = 0; I < C; I++) {
+     St = gBS->HandleProtocol (H[I], &gEfiDevicePathProtocolGuid, (VOID **)&Dp);
+     if (EFI_ERROR (St) || (Dp == NULL)) {
+-      DEBUG ((DEBUG_WARN, "  CENSUS %a[%d]: no devpath\n", Name, I));
++      Print (L"  CENSUS %a[%d]: no devpath\n", Name, I);
+       continue;
+     }
+ 
+     Txt = ConvertDevicePathToText (Dp, TRUE, TRUE);
+     if (Txt != NULL) {
+-      DEBUG ((DEBUG_WARN, "  CENSUS %a[%d]: %s\n", Name, I, Txt));
++      Print (L"  CENSUS %a[%d]: %s\n", Name, I, Txt);
+       FreePool (Txt);
+     }
+   }
+@@ -370,19 +370,19 @@ SelectAndBootDevice (
+                   &Handles
+                   );
+   if (EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_ERROR, "Unable to locate any %g handles - code=%r\n", ByGuid, Status));
++    Print (L"Unable to locate any %g handles - code=%r\n", ByGuid, Status);
+     return Status;
+   }
+ 
+-  DEBUG ((DEBUG_WARN, "Found %d handles\n", HandleCount));
++  Print (L"Found %d handles\n", HandleCount);
+   DisplayDevicePaths (Handles, HandleCount);
+   DumpHandlesByProtocol (&gEfiBlockIoProtocolGuid, "BLOCKIO");
+   DumpHandlesByProtocol (&gEfiDiskIoProtocolGuid, "DISKIO");
+   DumpHandlesByProtocol (&gEfiUsbIoProtocolGuid, "USBIO");
+   FilterHandles (Handles, &HandleCount, ByFilter);
+-  DEBUG ((DEBUG_WARN, "%d handles survived filtering\n", HandleCount));
++  Print (L"%d handles survived filtering\n", HandleCount);
+   if (HandleCount == 0) {
+-    DEBUG ((DEBUG_WARN, "No handles survived filtering!\n"));
++    Print (L"No handles survived filtering!\n");
+     return EFI_NOT_FOUND;
+   }
+ 
+@@ -392,18 +392,18 @@ SelectAndBootDevice (
+   for (Index = 0; Index < HandleCount; Index++) {
+     DevicePath = DevicePathFromHandle (Handles[Index]);
+     if (DevicePath == NULL) {
+-      DEBUG ((DEBUG_ERROR, "DevicePathFromHandle(%p) FAILED\n", Handles[Index]));
++      Print (L"DevicePathFromHandle(%p) FAILED\n", Handles[Index]);
+       continue;
+     }
+ 
+     TmpStr = ConvertDevicePathToText (DevicePath, TRUE, TRUE);
+     if (TmpStr == NULL) {
+-      DEBUG ((DEBUG_ERROR, "ConvertDevicePathToText(%p) FAILED ", DevicePath));
++      Print (L"ConvertDevicePathToText(%p) FAILED ", DevicePath);
+       continue;
+     }
+ 
+-    DEBUG ((DEBUG_WARN, "Selecting device %s", TmpStr));
+-    DEBUG ((DEBUG_INFO, "\n"));
++    Print (L"Selecting device %s", TmpStr);
++    Print (L"\n");
+     if (MsBootPolicyLibIsDeviceBootable (Handles[Index])) {
+       EfiBootManagerInitializeLoadOption (
+         &BootOption,
+@@ -417,10 +417,10 @@ SelectAndBootDevice (
+         );
+ 
+       if ((ByFilter == FilterOnlyIPv4) || (ByFilter == FilterOnlyIPv6) || (ByFilter == FilterOnlyUSB)) {
+-        DEBUG ((DEBUG_INFO, "Attempting alternate boot...\n"));
++        Print (L"Attempting alternate boot...\n");
+         Status = SetAltBoot ();
+         if (EFI_ERROR (Status) != FALSE) {
+-          DEBUG ((DEBUG_ERROR, "Alternate boot set failed %r...\n", Status));
++          Print (L"Alternate boot set failed %r...\n", Status);
+         }
+       }
+ 
+@@ -433,8 +433,8 @@ SelectAndBootDevice (
+         break;
+       }
+     } else {
+-      DEBUG ((DEBUG_WARN, "Device %s\n", TmpStr));
+-      DEBUG ((DEBUG_WARN, " was blocked from booting\n"));
++      Print (L"Device %s\n", TmpStr);
++      Print (L" was blocked from booting\n");
+     }
+ 
+     FreePool (TmpStr);
+@@ -480,7 +480,7 @@ CleanLoadOptions (
+   Name      = AllocateZeroPool (NameSize);
+   ArrayList = NULL;
+ 
+-  DEBUG ((DEBUG_INFO, "%a Entry \n", __FUNCTION__));
++  Print (L"%a Entry \n", __FUNCTION__);
+ 
+   // Based on Load option type create strings for string comparisons
+ 
+@@ -558,7 +558,7 @@ CleanLoadOptions (
+                       0,
+                       NULL
+                       );
+-      DEBUG ((DEBUG_INFO, "%a Deleting the Unused load option %s\n", __FUNCTION__, &ArrayList[OptionCount * OptionLength]));
++      Print (L"%a Deleting the Unused load option %s\n", __FUNCTION__, &ArrayList[OptionCount * OptionLength]);
+     }
+   }
+ 
+@@ -595,7 +595,7 @@ PauseToLetUsbDrivesEnumerateThroughHubs (
+ 
+   Status = gBS->CreateEvent (EVT_TIMER, TPL_NOTIFY, NULL, NULL, &PauseEvent);
+   if (EFI_ERROR (Status)) {
+-    DEBUG ((DEBUG_ERROR, "Could not create event! %r\n", Status));
++    Print (L"Could not create event! %r\n", Status);
+     return;
+   }
+ 
+@@ -604,7 +604,7 @@ PauseToLetUsbDrivesEnumerateThroughHubs (
+   if (!EFI_ERROR (Status)) {
+     Status = gBS->WaitForEvent (1, &PauseEvent, &SignalIndex);
+     if (EFI_ERROR (Status)) {
+-      DEBUG ((DEBUG_ERROR, "Wait for Event failed! %r\n", Status));
++      Print (L"Wait for Event failed! %r\n", Status);
+     }
+   }
+ 
+@@ -648,7 +648,7 @@ MsBootPolicyEntry (
+     Parameters = (CHAR8 *)ImageInfo->LoadOptions;
+   }
+ 
+-  DEBUG ((DEBUG_INFO, "%a parameter = %a\n", __FUNCTION__, Parameters));
++  Print (L"%a parameter = %a\n", __FUNCTION__, Parameters);
+ 
+   // Entry is from BDS as a boot option.
+   switch (*Parameters) {
+@@ -666,7 +666,7 @@ MsBootPolicyEntry (
+       AltBootRequest = ('A' == *(Parameters + 1));
+       Status         = MsBootPolicyLibGetBootSequence (&BootSequence, AltBootRequest);
+       if (EFI_ERROR (Status)) {
+-        DEBUG ((DEBUG_ERROR, "Unable to get boot sequence - using hard coded sequence.\n"));
++        Print (L"Unable to get boot sequence - using hard coded sequence.\n");
+         BootSequence = mDefaultBootSequence;
+       }
+ 
+@@ -678,10 +678,10 @@ MsBootPolicyEntry (
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+ 
+   Status = EFI_SUCCESS;
+-  DEBUG ((DEBUG_INFO, "%a starting with parm %c\n", __FUNCTION__, *Parameters));
++  Print (L"%a starting with parm %c\n", __FUNCTION__, *Parameters);
+   Index = 0;
+   while (BootSequence[Index] != MsBootDone) {
+-    DEBUG ((DEBUG_WARN, "Attempting boot type %d\n", BootSequence[Index]));
++    Print (L"Attempting boot type %d\n", BootSequence[Index]);
+     switch (BootSequence[Index]) {
+       case MsBootPXE4:
+         StartNetworking ();
+@@ -693,7 +693,7 @@ MsBootPolicyEntry (
+                    &EnableIPv6
+                    );
+         if (EFI_ERROR (Status)) {
+-          DEBUG ((DEBUG_ERROR, "%a unable to get IPv6 setting, using default\n", __FUNCTION__));
++          Print (L"%a unable to get IPv6 setting, using default\n", __FUNCTION__);
+         }
+ 
+         if (EnableIPv6) {
+@@ -707,7 +707,7 @@ MsBootPolicyEntry (
+       case MsBootHDD:
+         GraphicStatus = SetGraphicsConsoleMode (GCM_NATIVE_RES);
+         if (EFI_ERROR (GraphicStatus) != FALSE) {
+-          DEBUG ((DEBUG_ERROR, "%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus));
++          Print (L"%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus);
+         }
+ 
+         Status = SelectAndBootDevice (&gEfiSimpleFileSystemProtocolGuid, FilterNoUSB);
+@@ -715,25 +715,25 @@ MsBootPolicyEntry (
+       case MsBootUSB:
+         GraphicStatus = SetGraphicsConsoleMode (GCM_NATIVE_RES);
+         if (EFI_ERROR (GraphicStatus) != FALSE) {
+-          DEBUG ((DEBUG_ERROR, "%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus));
++          Print (L"%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus);
+         }
+ 
+         Status = SelectAndBootDevice (&gEfiSimpleFileSystemProtocolGuid, FilterOnlyUSB);
+         if (Status == EFI_NOT_FOUND) {
+-          DEBUG ((DEBUG_WARN, "USB boot desired, but no USB devices found on first attempt\n"));
++          Print (L"USB boot desired, but no USB devices found on first attempt\n");
+           // attempting USB boot but no USB devices were found.
+           // USB enumeration through (crappy, slow) hubs may take a while, especially in
+           // debug builds. wait a number of seconds and try one more time.
+           PauseToLetUsbDrivesEnumerateThroughHubs ();
+           Status = SelectAndBootDevice (&gEfiSimpleFileSystemProtocolGuid, FilterOnlyUSB);
+           if (EFI_ERROR (Status)) {
+-            DEBUG ((DEBUG_WARN, "Second chance USB boot failed! Status = %r\n", Status));
++            Print (L"Second chance USB boot failed! Status = %r\n", Status);
+           }
+         }
+ 
+         break;
+       default:
+-        DEBUG ((DEBUG_ERROR, "Invalid BootSequence value %x\n", BootSequence[Index]));
++        Print (L"Invalid BootSequence value %x\n", BootSequence[Index]);
+         Status = EFI_INVALID_PARAMETER;
+         break;
+     }
+@@ -749,16 +749,16 @@ MsBootPolicyEntry (
+   // Need to populate GraphicStatus here, otherwise logo function return value will override boot result
+   GraphicStatus = SetGraphicsConsoleMode (GCM_NATIVE_RES);
+   if (EFI_ERROR (GraphicStatus) != FALSE) {
+-    DEBUG ((DEBUG_ERROR, "%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus));
++    Print (L"%a Unable to set console mode - %r\n", __FUNCTION__, GraphicStatus);
+     goto Done;
+   }
+ 
+   GraphicStatus = DisplayBootGraphic (BG_SYSTEM_LOGO);
+   if (EFI_ERROR (GraphicStatus) != FALSE) {
+-    DEBUG ((DEBUG_ERROR, "%a Unable to set graphics - %r\n", __FUNCTION__, GraphicStatus));
++    Print (L"%a Unable to set graphics - %r\n", __FUNCTION__, GraphicStatus);
+   }
+ 
+ Done:
+-  DEBUG ((DEBUG_INFO, "Exit boot policy. Index=%d, BS=%d, Status=%r\n", Index, BootSequence[Index], Status));
++  Print (L"Exit boot policy. Index=%d, BS=%d, Status=%r\n", Index, BootSequence[Index], Status);
+   return Status;
+ }
+-- 
+2.43.0
+

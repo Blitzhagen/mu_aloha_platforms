@@ -1,0 +1,156 @@
+From cd861219df2d816514fa9ca44c2ff0c4cf7c51f0 Mon Sep 17 00:00:00 2001
+From: Devin <devin@local>
+Date: Tue, 24 Nov 2026 16:37:49 +0000
+Subject: [PATCH 4/4] v154: MMAP/GCD-Dump + MTI-Var-Reset in MsBootPolicy
+
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c   | 106 +++++++++++++++++++++++++
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.inf |   1 +
+ 2 files changed, 107 insertions(+)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index bd215ec1..769f1bd2 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -7,6 +7,8 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ 
+ #include "MsBootPolicy.h"
+ #include <Library/MemoryMapHelperLib.h>
++#include <Pi/PiDxeCis.h>
++#include <Library/DxeServicesTableLib.h>
+ #include <Library/CacheMaintenanceLib.h>
+ 
+ #define USB_DRIVE_SECOND_CHANCE_DELAY_S  6
+@@ -191,6 +193,107 @@ DumpMuLogRawBlocks (
+ // v149: kompletten PStore-Serialring auf das erste beschreibbare
+ // FAT-Volume dumpen (Stick-ESP oder UFS-Partition) - macht Logs ohne
+ // Screen/ramoops lesbar.
++// v154: EFI-Memory-Map + GCD-Space-Map ins Log - zeigt welche Ranges
++// Windows bekommt und warum ConvertPages auf 0x10000000/0x102000 scheitert.
++static CONST CHAR8 * const mMemTypeNames[] = {
++  "Reserved","LoaderCode","LoaderData","BS_Code","BS_Data",
++  "RT_Code","RT_Data","Conv","Unusable","ACPIRcl","ACPI_NVS",
++  "MMIO","MMIOPort","PalCode","Persistent"
++};
++
++VOID
++DumpEfiMemoryMap (
++  VOID
++  )
++{
++  EFI_MEMORY_DESCRIPTOR  *Map, *E;
++  UINTN                  MapSize, DescSize, Key;
++  UINT32                 DescVer;
++  UINT64                 Addr;
++  EFI_STATUS             St;
++
++  MapSize = 0;
++  St = gBS->GetMemoryMap (&MapSize, NULL, &Key, &DescSize, &DescVer);
++  if (St != EFI_BUFFER_TOO_SMALL) {
++    DEBUG ((DEBUG_ERROR, "MMAP: GetMemoryMap size -> %r\n", St));
++    return;
++  }
++  Map = AllocatePool (MapSize + 4 * DescSize);
++  if (Map == NULL) {
++    return;
++  }
++  MapSize += 4 * DescSize;
++  St = gBS->GetMemoryMap (&MapSize, Map, &Key, &DescSize, &DescVer);
++  if (EFI_ERROR (St)) {
++    DEBUG ((DEBUG_ERROR, "MMAP: GetMemoryMap -> %r\n", St));
++    FreePool (Map);
++    return;
++  }
++  DEBUG ((DEBUG_ERROR, "MMAP: %d entries\n", (UINT32)(MapSize / DescSize)));
++  E = Map;
++  while ((UINTN)E < (UINTN)Map + MapSize) {
++    Addr = E->PhysicalStart;
++    DEBUG ((
++      DEBUG_ERROR,
++      "MMAP: %a %lx pgs %lx attr %lx\n",
++      (E->Type < 15 ? mMemTypeNames[E->Type] : "?"),
++      (UINT64)Addr,
++      (UINT64)E->NumberOfPages,
++      (UINT64)E->Attribute
++      ));
++    E = NEXT_MEMORY_DESCRIPTOR (E, DescSize);
++  }
++  FreePool (Map);
++}
++
++VOID
++DumpGcdMap (
++  VOID
++  )
++{
++  EFI_GCD_MEMORY_SPACE_DESCRIPTOR  *Map;
++  UINTN                            C, I;
++  EFI_STATUS                       St;
++
++  C   = 0;
++  Map = NULL;
++  St  = gDS->GetMemorySpaceMap (&C, &Map);
++  if (EFI_ERROR (St)) {
++    DEBUG ((DEBUG_ERROR, "GCD: map -> %r\n", St));
++    return;
++  }
++  DEBUG ((DEBUG_ERROR, "GCD: %d entries\n", (UINT32)C));
++  for (I = 0; I < C; I++) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "GCD: %lx len %lx cap %lx attr %lx t %d\n",
++      (UINT64)Map[I].BaseAddress,
++      (UINT64)Map[I].Length,
++      (UINT64)Map[I].Capabilities,
++      (UINT64)Map[I].Attributes,
++      (UINT32)Map[I].GcdMemoryType
++      ));
++  }
++  if (Map != NULL) {
++    FreePool (Map);
++  }
++}
++
++// v154: stale MemoryTypeInformation-Variable loeschen (alt: 0x30B,
++// erwartet: 0x50B) - wird beim naechsten Save korrekt neu geschrieben.
++VOID
++ResetMemoryTypeInfoVar (
++  VOID
++  )
++{
++  static EFI_GUID  MemTypeInfoGuid =
++    { 0x4c19049f, 0x4137, 0x4dd3, { 0x9c, 0x10, 0x8b, 0x97, 0xa8, 0x3f, 0xfd, 0xfa } };
++  EFI_STATUS  St;
++
++  St = gRT->SetVariable (L"MemoryTypeInformation", &MemTypeInfoGuid, 0, 0, NULL);
++  DEBUG ((DEBUG_ERROR, "MTI-VAR: delete -> %r\n", St));
++}
++
+ VOID
+ DumpPStoreToFile (
+   VOID
+@@ -781,6 +884,9 @@ MsBootPolicyEntry (
+ 
+   EfiBootManagerConnectAll ();     // Connect All is required for this type of boot
+   DumpPStoreToFile ();           // v149: Serial-Log auf Datei
++  ResetMemoryTypeInfoVar ();      // v154: stale Variable raus
++  DumpEfiMemoryMap ();             // v154: EfiMap ins Log
++  DumpGcdMap ();                   // v154: GCD ins Log
+ 
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+ 
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf b/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
+index 1d13b13f..04b2e4c4 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
+@@ -42,6 +42,7 @@
+   UefiLib
+   BaseMemoryLib
+   DebugLib
++  DxeServicesTableLib
+   PrintLib
+   MsBootPolicyLib
+   UefiBootManagerLib
+-- 
+2.43.0
+
