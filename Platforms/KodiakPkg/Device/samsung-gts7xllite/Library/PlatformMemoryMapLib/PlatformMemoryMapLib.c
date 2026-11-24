@@ -61,7 +61,7 @@ static ARM_MEMORY_REGION_DESCRIPTOR_EX gDeviceMemoryDescriptorEx[] = {
 
     #if USE_MEMORY_FOR_SERIAL_OUTPUT == 1
     { "PStore",            0xE4B00000, 0x00400000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH_XN },
-    { "RAM Partition",     0xE4B40000, 0x9B4C0000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN },
+    { "RAM Partition",     0xE4F00000, 0x9B070000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN },
     #else
     { "RAM Partition",     0xE4B00000, 0x9B500000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv,   WRITE_BACK_XN },
     #endif
