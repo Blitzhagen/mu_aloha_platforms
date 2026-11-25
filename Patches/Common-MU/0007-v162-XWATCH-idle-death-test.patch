@@ -1,0 +1,44 @@
+From 26cda018c8bbd052ac9eade3fa6fc1b84fcfa956 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 17:27:52 +0100
+Subject: [PATCH] v162: XWATCH idle-death test (300ms/1s/3s stalls) +
+ post-efiboot watch
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index 01c735e4..a1d087e6 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -763,6 +763,7 @@ SelectAndBootDevice (
+ 
+       XWatch ("pre-efiboot");
+       EfiBootManagerBoot (&BootOption);
++      XWatch ("post-efiboot");
+       Status = BootOption.Status;
+ 
+       EfiBootManagerFreeLoadOption (&BootOption);
+@@ -1026,6 +1027,15 @@ MsBootPolicyEntry (
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+   XWatch ("post-cleanload");
+ 
++  // v162: Idle-Death-Gegenprobe — stirbt der Port von selbst (Timer/Power-Collapse)
++  // oder braucht es den StartImage-Uebergang? BDS-Luecken waren schon >1s und er lebte.
++  gBS->Stall (300 * 1000);
++  XWatch ("idle-300ms");
++  gBS->Stall (700 * 1000);
++  XWatch ("idle-1s");
++  gBS->Stall (2000 * 1000);
++  XWatch ("idle-3s");
++
+   Status = EFI_SUCCESS;
+   DEBUG ((DEBUG_ERROR, "%a starting with parm %c\n", __FUNCTION__, *Parameters));
+   Index = 0;
+-- 
+2.53.0
+
