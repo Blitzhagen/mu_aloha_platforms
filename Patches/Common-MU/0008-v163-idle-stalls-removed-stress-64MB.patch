@@ -1,0 +1,45 @@
+From f43e51b62313ba4538ce78a6515de22a51d87473 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 18:10:19 +0100
+Subject: [PATCH] v163: idle-stall block removed (idle-death refuted), stress
+ shrunk to 64MB
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 11 +----------
+ 1 file changed, 1 insertion(+), 10 deletions(-)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index a1d087e6..bc34c127 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -324,7 +324,7 @@ XWatch (
+ // Haengt der Stack, zeigt das PStore-Fenster die letzte gute LBA.
+ #define STRESS_CHUNK_BYTES  (4 * 1024 * 1024)
+ #define STRESS_LOG_EVERY    (16 * 1024 * 1024)
+-#define STRESS_MAX_BYTES    ((UINT64)1024 * 1024 * 1024)
++#define STRESS_MAX_BYTES    ((UINT64)64 * 1024 * 1024)
+ #define STRESS_MAX_ERRS     4
+ 
+ VOID
+@@ -1027,15 +1027,6 @@ MsBootPolicyEntry (
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+   XWatch ("post-cleanload");
+ 
+-  // v162: Idle-Death-Gegenprobe — stirbt der Port von selbst (Timer/Power-Collapse)
+-  // oder braucht es den StartImage-Uebergang? BDS-Luecken waren schon >1s und er lebte.
+-  gBS->Stall (300 * 1000);
+-  XWatch ("idle-300ms");
+-  gBS->Stall (700 * 1000);
+-  XWatch ("idle-1s");
+-  gBS->Stall (2000 * 1000);
+-  XWatch ("idle-3s");
+-
+   Status = EFI_SUCCESS;
+   DEBUG ((DEBUG_ERROR, "%a starting with parm %c\n", __FUNCTION__, *Parameters));
+   Index = 0;
+-- 
+2.53.0
+

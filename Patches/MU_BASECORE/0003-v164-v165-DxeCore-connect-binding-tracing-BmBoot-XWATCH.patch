@@ -1,0 +1,115 @@
+From aaf2dc511d138054fdadf465038cc6c8fe63ff6c Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 18:10:21 +0100
+Subject: [PATCH] v164+v165: DxeCore connect/disconnect + driver-binding
+ tracing, BmBoot XWATCH
+
+CNCT/DCNCT prints in CoreConnectController/CoreDisconnectController;
+BSTART/BDONE prints (drv image handle + ImageBase + ctrl handle) in
+CoreConnectSingleDriver; XWATCH post-loadimage/pre-startimage PORTSC
+polls in EfiBootManagerBoot.
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ MdeModulePkg/Core/Dxe/Hand/DriverSupport.c    | 20 +++++++++++++++++++
+ .../Library/UefiBootManagerLib/BmBoot.c       | 16 +++++++++++++++
+ 2 files changed, 36 insertions(+)
+
+diff --git a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+index 64d7474f15..eed471cfdf 100644
+--- a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
++++ b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+@@ -65,6 +65,8 @@ CoreConnectController (
+   EFI_DEVICE_PATH_PROTOCOL  *FilePath;
+   EFI_DEVICE_PATH_PROTOCOL  *TempFilePath;
+ 
++  DEBUG ((DEBUG_ERROR, "CNCT h=%x rec=%d\n", (UINTN)ControllerHandle, (UINTN)Recursive));
++
+   //
+   // Make sure ControllerHandle is valid
+   //
+@@ -654,6 +656,19 @@ CoreConnectSingleController (
+           // A driver was found that supports ControllerHandle, so attempt to start the driver
+           // on ControllerHandle.
+           //
++          {
++            EFI_LOADED_IMAGE_PROTOCOL  *BmLi = NULL;
++
++            CoreHandleProtocol (
++              DriverBinding->ImageHandle,
++              &gEfiLoadedImageProtocolGuid,
++              (VOID **)&BmLi
++              );
++            DEBUG ((DEBUG_ERROR, "BSTART drv=%x base=%x ctrl=%x\n",
++                    (UINTN)DriverBinding->ImageHandle,
++                    (BmLi != NULL) ? (UINTN)BmLi->ImageBase : 0,
++                    (UINTN)ControllerHandle));
++          }
+           PERF_DRIVER_BINDING_START_BEGIN (DriverBinding->DriverBindingHandle, ControllerHandle);
+           Status = DriverBinding->Start (
+                                     DriverBinding,
+@@ -662,6 +677,9 @@ CoreConnectSingleController (
+                                     );
+           PERF_DRIVER_BINDING_START_END (DriverBinding->DriverBindingHandle, ControllerHandle);
+ 
++          DEBUG ((DEBUG_ERROR, "BDONE  drv=%x ctrl=%x st=%r\n",
++                  (UINTN)DriverBinding->ImageHandle, (UINTN)ControllerHandle, Status));
++
+           if (!EFI_ERROR (Status)) {
+             //
+             // The driver was successfully started on ControllerHandle, so set a flag
+@@ -759,6 +777,8 @@ CoreDisconnectController (
+   PROTOCOL_INTERFACE           *Prot;
+   EFI_DRIVER_BINDING_PROTOCOL  *DriverBinding;
+ 
++  DEBUG ((DEBUG_ERROR, "DCNCT h=%x drv=%x child=%x\n", (UINTN)ControllerHandle, (UINTN)DriverImageHandle, (UINTN)ChildHandle));
++
+   //
+   // Make sure ControllerHandle is valid
+   //
+diff --git a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+index c1f5eb4b7a..af87630308 100644
+--- a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
++++ b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+@@ -1888,6 +1888,18 @@ BmReportLoadFailure (
+                         !EFI_SUCCESS    BootOption failed with this error status
+ 
+ **/
++// v164: xHC PORTSC-Watch (gleiche Phys-Basis wie MsBootPolicy XWATCH)
++#define XWATCH_XHC_PHYS  0x0A600000ULL
++
++STATIC UINT32
++BmXWatchPort (
++  UINTN  Port
++  )
++{
++  volatile UINT8  *Base = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
++  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
++}
++
+ VOID
+ EFIAPI
+ EfiBootManagerBoot (
+@@ -2123,6 +2135,8 @@ EfiBootManagerBoot (
+     return;
+   }
+ 
++  DEBUG ((DEBUG_ERROR, "XWATCH post-loadimage: psc0=%x psc1=%x\n", BmXWatchPort (0), BmXWatchPort (1)));
++
+   //
+   // Provide the image with its load options
+   //
+@@ -2158,6 +2172,8 @@ EfiBootManagerBoot (
+ 
+   REPORT_STATUS_CODE (EFI_PROGRESS_CODE, PcdGet32 (PcdProgressCodeOsLoaderStart));
+ 
++  DEBUG ((DEBUG_ERROR, "XWATCH pre-startimage: psc0=%x psc1=%x\n", BmXWatchPort (0), BmXWatchPort (1)));
++
+   Status = gBS->StartImage (ImageHandle, &BootOption->ExitDataSize, &BootOption->ExitData);
+   DEBUG ((DEBUG_INFO | DEBUG_LOAD, "Image Return Status = %r\n", Status));
+   BootOption->Status = Status;
+-- 
+2.53.0
+
