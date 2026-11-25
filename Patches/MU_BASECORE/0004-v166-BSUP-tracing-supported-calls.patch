@@ -1,0 +1,43 @@
+From 2b1f074fe40c65c8c6a541f5e18a9feb456ef1cb Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 18:17:28 +0100
+Subject: [PATCH] v166: BSUP tracing - Supported() calls visible
+ (drv+base+ctrl)
+
+Last BSTART before death was innocent (UsbBusDxe re-enum); v166 also
+logs every Supported() call so a hw-poking Supported is caught too.
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ MdeModulePkg/Core/Dxe/Hand/DriverSupport.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+index eed471cfdf..d4993387d6 100644
+--- a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
++++ b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+@@ -641,6 +641,19 @@ CoreConnectSingleController (
+     for (Index = 0; (Index < NumberOfSortedDriverBindingProtocols) && !DriverFound; Index++) {
+       if (SortedDriverBindingProtocols[Index] != NULL) {
+         DriverBinding = SortedDriverBindingProtocols[Index];
++        {
++          EFI_LOADED_IMAGE_PROTOCOL  *BsLi = NULL;
++
++          CoreHandleProtocol (
++            DriverBinding->ImageHandle,
++            &gEfiLoadedImageProtocolGuid,
++            (VOID **)&BsLi
++            );
++          DEBUG ((DEBUG_ERROR, "BSUP drv=%x base=%x ctrl=%x\n",
++                  (UINTN)DriverBinding->ImageHandle,
++                  (BsLi != NULL) ? (UINTN)BsLi->ImageBase : 0,
++                  (UINTN)ControllerHandle));
++        }
+         PERF_DRIVER_BINDING_SUPPORT_BEGIN (DriverBinding->DriverBindingHandle, ControllerHandle);
+         Status = DriverBinding->Supported (
+                                   DriverBinding,
+-- 
+2.53.0
+
