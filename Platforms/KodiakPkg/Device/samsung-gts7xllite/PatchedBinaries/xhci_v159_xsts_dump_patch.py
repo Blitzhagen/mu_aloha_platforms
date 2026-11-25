@@ -49,9 +49,13 @@ CAVE = bytes.fromhex(
 FMT = b"XSTS cmd=%x sts=%x psc0=%x pmsc=%x pli=%x psc1=%x\n\x00"
 
 PATCHES = [
-    (0x6A70, bytes.fromhex("07000014"), bytes.fromhex("24370014"),
+    # Achtung Fix: Offset ist (0x14300-0x6a70)=0xD890 -> imm26=0x3624,
+    # NICHT 0x3724 (v159-Bug: sprang nach 0x14700 -> Sync Exception).
+    (0x6A70, bytes.fromhex("07000014"), bytes.fromhex("24360014"),
      "hook cc4-case -> cave@0x14300"),
 ]
+# v159-Fehlpatch (0xDC90 statt 0xD890) reparieren, falls schon angewendet
+FIX_PREV = (0x6A70, bytes.fromhex("24370014"), bytes.fromhex("24360014"))
 WRITES = [
     (0x14300, CAVE, "dump-cave (.text zero tail)"),
     (0x14400, FMT, "fmt string"),
@@ -59,6 +63,11 @@ WRITES = [
 
 def main(path):
     with open(path, "r+b") as f:
+        f.seek(FIX_PREV[0])
+        if f.read(4) == FIX_PREV[1]:
+            f.seek(FIX_PREV[0])
+            f.write(FIX_PREV[2])
+            print(f"{FIX_PREV[0]:#06x}: fixed bad v159 hook (->0x14300)")
         for off, expect, patch, desc in PATCHES:
             f.seek(off)
             got = f.read(len(expect))
