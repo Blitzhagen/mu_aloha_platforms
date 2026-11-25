@@ -7,7 +7,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 apply() {
   sub="$1"; dir="$2"
   echo "== $sub <="
-  git -C "$ROOT/$sub" am --3way --whitespace=nowarn "$ROOT/Patches/$dir"/*.patch
+  # --ignore-whitespace: Upstream enthaelt CRLF-Dateien (z.B. DebugLib.c),
+  # die Patches wurden auf einem LF-normalisierten Tree erzeugt - ohne das
+  # Flag schlaegt das Kontext-Matching zeilenweise fehl.
+  git -C "$ROOT/$sub" am --3way --whitespace=nowarn --ignore-whitespace "$ROOT/Patches/$dir"/*.patch
 }
 
 apply MU_BASECORE      MU_BASECORE

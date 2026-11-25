@@ -1,0 +1,168 @@
+From a78e9c66dad715ffab49303b351aa5e408a160ad Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 04:21:05 +0100
+Subject: [PATCH] v157: BlockIo-Read-Stress in MsBootPolicy (Ramdisk-Hang?)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sequentielle 4MB-Reads auf allen Removable-BlockIo-Handles (Disk+
+Partitionen, bis 1GB je Handle), Timing je Chunk via TimerLib,
+Log alle 16MB + bei >2s-Chunks + Fehler. Hängt der Mu-USB-Stack
+beim sustained Read, zeigt PStore die letzte gute LBA.
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c   | 111 +++++++++++++++++++++++++
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.inf |   1 +
+ 2 files changed, 112 insertions(+)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index 769f1bd2..30b4f5be 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -10,6 +10,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ #include <Pi/PiDxeCis.h>
+ #include <Library/DxeServicesTableLib.h>
+ #include <Library/CacheMaintenanceLib.h>
++#include <Library/TimerLib.h>
+ 
+ #define USB_DRIVE_SECOND_CHANCE_DELAY_S  6
+ 
+@@ -294,6 +295,115 @@ ResetMemoryTypeInfoVar (
+   DEBUG ((DEBUG_ERROR, "MTI-VAR: delete -> %r\n", St));
+ }
+ 
++// v157: BlockIo-Read-Stress - prueft ob lange sequentielle Reads
++// (Ramdisk-Aufbau ~630MB) den Mu-USB-Stack haengen. Liest jeden
++// Removable-Handle (Disk + Partitionen) bis zu STRESS_MAX_BYTES
++// sequentiell in 4MB-Chunks, loggt Zeit/Durchsatz je 16MB.
++// Haengt der Stack, zeigt das PStore-Fenster die letzte gute LBA.
++#define STRESS_CHUNK_BYTES  (4 * 1024 * 1024)
++#define STRESS_LOG_EVERY    (16 * 1024 * 1024)
++#define STRESS_MAX_BYTES    ((UINT64)1024 * 1024 * 1024)
++#define STRESS_MAX_ERRS     4
++
++VOID
++StressUsbBlockRead (
++  VOID
++  )
++{
++  EFI_HANDLE              *H;
++  UINTN                   C, I;
++  EFI_STATUS              St;
++  EFI_BLOCK_IO_PROTOCOL   *Bio;
++  UINTN                   Blk;
++  UINT64                  MediaBytes, TotalBytes, Done, T0, Dt;
++  UINT8                   *Buf;
++  UINTN                   Errs;
++
++  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &C, &H);
++  if (EFI_ERROR (St) || (C == 0)) {
++    DEBUG ((DEBUG_ERROR, "STRESS: no BlockIo handles (%r)\n", St));
++    return;
++  }
++
++  DEBUG ((DEBUG_ERROR, "STRESS: %d blockio handles\n", (UINT32)C));
++  for (I = 0; I < C; I++) {
++    St = gBS->HandleProtocol (H[I], &gEfiBlockIoProtocolGuid, (VOID **)&Bio);
++    if (EFI_ERROR (St) || (Bio == NULL) || (Bio->Media == NULL)) {
++      continue;
++    }
++    if (!Bio->Media->RemovableMedia) {
++      continue;   // nur den Stick - UFS auslassen
++    }
++
++    Blk = (UINTN)Bio->Media->BlockSize;
++    if (Blk == 0) {
++      continue;
++    }
++    MediaBytes = ((UINT64)Bio->Media->LastBlock + 1) * Blk;
++    TotalBytes = MIN (MediaBytes, STRESS_MAX_BYTES);
++    DEBUG ((
++      DEBUG_ERROR,
++      "STRESS h%d: blk %d media %ldMB ioalign %d lastblk %ld lp %d -> %ldMB zu lesen\n",
++      (UINT32)I, (UINT32)Blk, MediaBytes / 1048576,
++      (UINT32)Bio->Media->IoAlign, (UINT64)Bio->Media->LastBlock,
++      (UINT32)Bio->Media->LogicalPartition, TotalBytes / 1048576
++      ));
++
++    Buf = AllocatePages (EFI_SIZE_TO_PAGES (STRESS_CHUNK_BYTES));
++    if (Buf == NULL) {
++      DEBUG ((DEBUG_ERROR, "STRESS h%d: alloc %d failed\n", (UINT32)I, (UINT32)STRESS_CHUNK_BYTES));
++      continue;
++    }
++
++    Errs = 0;
++    Done = 0;
++    T0   = GetPerformanceCounter ();
++    while (Done < TotalBytes) {
++      UINTN     Want;
++      EFI_LBA   Lba;
++      UINT64    C0;
++      UINTN     Ms;
++
++      Want = (UINTN)MIN ((UINT64)STRESS_CHUNK_BYTES, TotalBytes - Done);
++      Lba  = Done / Blk;
++      C0   = GetPerformanceCounter ();
++      St   = Bio->ReadBlocks (Bio, Bio->Media->MediaId, Lba, Want, Buf);
++      Dt   = GetPerformanceCounter () - C0;
++      Ms   = (UINTN)(GetTimeInNanoSecond (Dt) / 1000000);
++      if (EFI_ERROR (St)) {
++        Errs++;
++        DEBUG ((DEBUG_ERROR, "STRESS h%d: lba %ld %dB -> %r (errs %d)\n",
++                (UINT32)I, (UINT64)Lba, (UINT32)Want, St, (UINT32)Errs));
++        if (Errs >= STRESS_MAX_ERRS) {
++          break;
++        }
++      } else if (((Done % STRESS_LOG_EVERY) == 0) || (Ms > 2000)) {
++        DEBUG ((
++          DEBUG_ERROR,
++          "STRESS h%d: lba %ld %dB in %dms (%ld MB/s)\n",
++          (UINT32)I, (UINT64)Lba, (UINT32)Want, (UINT32)Ms,
++          Ms ? (UINT64)Want * 1000 / ((UINT64)Ms * 1048576) : 0
++          ));
++      }
++
++      Done += Want;
++    }
++
++    Dt = GetPerformanceCounter () - T0;
++    {
++      UINTN  TotMs = (UINTN)(GetTimeInNanoSecond (Dt) / 1000000);
++      DEBUG ((
++        DEBUG_ERROR,
++        "STRESS h%d END: %ldMB in %dms = %ld MB/s, errs %d\n",
++        (UINT32)I, Done / 1048576, (UINT32)TotMs,
++        TotMs ? Done * 1000 / ((UINT64)TotMs * 1048576) : 0, (UINT32)Errs
++        ));
++    }
++    FreePages (Buf, EFI_SIZE_TO_PAGES (STRESS_CHUNK_BYTES));
++  }
++  DEBUG ((DEBUG_ERROR, "STRESS: all removable handles done\n"));
++}
++
+ VOID
+ DumpPStoreToFile (
+   VOID
+@@ -887,6 +997,7 @@ MsBootPolicyEntry (
+   ResetMemoryTypeInfoVar ();      // v154: stale Variable raus
+   DumpEfiMemoryMap ();             // v154: EfiMap ins Log
+   DumpGcdMap ();                   // v154: GCD ins Log
++  StressUsbBlockRead ();           // v157: BlockIo-Read-Stress (Ramdisk-Hang?)
+ 
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+ 
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf b/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
+index 04b2e4c4..36019033 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.inf
+@@ -54,6 +54,7 @@
+   GraphicsConsoleHelperLib
+   MemoryMapHelperLib
+   CacheMaintenanceLib
++  TimerLib
+ 
+ [Guids]
+ 
+-- 
+2.53.0
+
