@@ -1,0 +1,79 @@
+From 209b3c44bdf3087b632f29534d091b2553355373 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Wed, 25 Nov 2026 17:16:29 +0100
+Subject: [PATCH] v161: MsBootPolicy XWATCH - PORTSC polls around boot
+ transition
+
+XSTS dump showed link already in RxDetect at first app URB (physically
+gone, not suspended). Watchpoints bisect WHEN: post-stress,
+post-cleanload, boot-type, pre-efiboot.
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index 30b4f5be..01c735e4 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -295,6 +295,28 @@ ResetMemoryTypeInfoVar (
+   DEBUG ((DEBUG_ERROR, "MTI-VAR: delete -> %r\n", St));
+ }
+ 
++// v161: xHC PORTSC-Watch — wann stirbt der USB-Link (RxDetect)?
++// Phys-Basis 0x0A600000 = PlatformMemoryMapLib "USB"-Eintrag (DWC3/xHC).
++// CAPLENGTH-Byte @+0x00 -> opreg base; PORTSCn @opreg+0x400+0x10*n.
++#define XWATCH_XHC_PHYS  0x0A600000ULL
++
++STATIC UINT32
++XWatchPort (
++  UINTN  Port
++  )
++{
++  volatile UINT8  *Base = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
++  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
++}
++
++STATIC VOID
++XWatch (
++  CONST CHAR8  *Tag
++  )
++{
++  DEBUG ((DEBUG_ERROR, "XWATCH %a: psc0=%x psc1=%x\n", Tag, XWatchPort (0), XWatchPort (1)));
++}
++
+ // v157: BlockIo-Read-Stress - prueft ob lange sequentielle Reads
+ // (Ramdisk-Aufbau ~630MB) den Mu-USB-Stack haengen. Liest jeden
+ // Removable-Handle (Disk + Partitionen) bis zu STRESS_MAX_BYTES
+@@ -739,6 +761,7 @@ SelectAndBootDevice (
+         }
+       }
+ 
++      XWatch ("pre-efiboot");
+       EfiBootManagerBoot (&BootOption);
+       Status = BootOption.Status;
+ 
+@@ -998,14 +1021,17 @@ MsBootPolicyEntry (
+   DumpEfiMemoryMap ();             // v154: EfiMap ins Log
+   DumpGcdMap ();                   // v154: GCD ins Log
+   StressUsbBlockRead ();           // v157: BlockIo-Read-Stress (Ramdisk-Hang?)
++  XWatch ("post-stress");
+ 
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
++  XWatch ("post-cleanload");
+ 
+   Status = EFI_SUCCESS;
+   DEBUG ((DEBUG_ERROR, "%a starting with parm %c\n", __FUNCTION__, *Parameters));
+   Index = 0;
+   while (BootSequence[Index] != MsBootDone) {
+     DEBUG ((DEBUG_ERROR, "Attempting boot type %d\n", BootSequence[Index]));
++    XWatch ("boot-type");
+     switch (BootSequence[Index]) {
+       case MsBootPXE4:
+         StartNetworking ();
+-- 
+2.53.0
+
