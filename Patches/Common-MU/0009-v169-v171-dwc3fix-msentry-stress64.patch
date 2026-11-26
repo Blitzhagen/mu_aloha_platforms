@@ -1,0 +1,52 @@
+From e79ab8c0c2a33034b363e0bdff3498b277140aca Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Thu, 26 Nov 2026 05:59:12 +0100
+Subject: [PATCH] v169-v171: idle-stalls removed, stress 64MB, Dwc3Fix msentry
+ poke
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index bc34c127..805168ca 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -317,6 +317,23 @@ XWatch (
+   DEBUG ((DEBUG_ERROR, "XWATCH %a: psc0=%x psc1=%x\n", Tag, XWatchPort (0), XWatchPort (1)));
+ }
+ 
++// v169: dwc3-SUSPHY/LPM-Bits erneut pruefen+loeschen - erkennt ob QC-Code
++// sie nach DxeMain wieder gesetzt hat (re-arm).
++STATIC VOID
++Dwc3Fix (
++  CONST CHAR8  *Tag
++  )
++{
++  volatile UINT8   *DwcBase = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
++  volatile UINT32  *PipeCtl = (volatile UINT32 *)(DwcBase + 0xC2C0);
++  volatile UINT32  *PhyCfg  = (volatile UINT32 *)(DwcBase + 0xC200);
++  UINT32           P0       = *PipeCtl;
++  UINT32           G0       = *PhyCfg;
++  *PipeCtl = P0 & ~((UINT32)(1u << 17) | (1u << 27));
++  *PhyCfg  = G0 & ~((UINT32)(1u << 6) | (1u << 8));
++  DEBUG ((DEBUG_ERROR, "DWC3FIX-%a pipe %x->%x gusb2 %x->%x\n", Tag, P0, *PipeCtl, G0, *PhyCfg));
++}
++
+ // v157: BlockIo-Read-Stress - prueft ob lange sequentielle Reads
+ // (Ramdisk-Aufbau ~630MB) den Mu-USB-Stack haengen. Liest jeden
+ // Removable-Handle (Disk + Partitionen) bis zu STRESS_MAX_BYTES
+@@ -991,6 +1008,7 @@ MsBootPolicyEntry (
+     Parameters = (CHAR8 *)ImageInfo->LoadOptions;
+   }
+ 
++  Dwc3Fix ("msentry");
+   DEBUG ((DEBUG_ERROR, "%a parameter = %a\n", __FUNCTION__, Parameters));
+ 
+   // Entry is from BDS as a boot option.
+-- 
+2.53.0
+

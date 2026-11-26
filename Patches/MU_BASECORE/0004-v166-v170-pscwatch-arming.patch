@@ -1,0 +1,155 @@
+From b8f849c6e8714446e7ab8f7ca07081a9d613c817 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Thu, 26 Nov 2026 05:59:12 +0100
+Subject: [PATCH] v166-v170: BSUP added+removed, PSCWATCH arming at first CNCT,
+ v169 DxeMain poke reverted
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
+---
+ MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c    |  1 +
+ MdeModulePkg/Core/Dxe/Event/Event.c        | 15 +++++++
+ MdeModulePkg/Core/Dxe/Hand/DriverSupport.c | 51 ++++++++++++++--------
+ 3 files changed, 48 insertions(+), 19 deletions(-)
+
+diff --git a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+index 3b9d06d162..74aa317a6f 100644
+--- a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
++++ b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+@@ -265,6 +265,7 @@ DxeMain (
+   Status = InitializeSeparateExceptionStacks (NULL, NULL);
+   ASSERT_EFI_ERROR (Status);
+ 
++
+   //
+   // Initialize Debug Agent to support source level debug in DXE phase
+   //
+diff --git a/MdeModulePkg/Core/Dxe/Event/Event.c b/MdeModulePkg/Core/Dxe/Event/Event.c
+index 49e0ca3e9c..ad66f4d4ce 100644
+--- a/MdeModulePkg/Core/Dxe/Event/Event.c
++++ b/MdeModulePkg/Core/Dxe/Event/Event.c
+@@ -335,6 +335,21 @@ CoreCreateEventEx (
+   }
+   MU_CHANGE End: Supporting all TPLs */
+ 
++  {
++    // v167: arm PORTSC watch when ReadyToBoot group event is created
++    extern BOOLEAN  gPscWatchArmed;
++
++    if ((EventGroup != NULL) &&
++        (EventGroup->Data1 == 0x7CE88FB3) &&
++        (EventGroup->Data2 == 0x4BD7) &&
++        (EventGroup->Data3 == 0x4679) &&
++        !gPscWatchArmed)
++    {
++      gPscWatchArmed = TRUE;
++      DEBUG ((DEBUG_ERROR, "PSCWATCH armed (RTB group)\n"));
++    }
++  }
++
+   return CoreCreateEventInternal (Type, NotifyTpl, NotifyFunction, NotifyContext, EventGroup, Event);
+ }
+ 
+diff --git a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+index d4993387d6..b32054368a 100644
+--- a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
++++ b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+@@ -13,6 +13,26 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ // Driver Support Functions
+ //
+ 
++// v167: PORTSC live watch, armed at ReadyToBoot (see Event.c)
++BOOLEAN  gPscWatchArmed = FALSE;
++
++#define PSCWATCH_XHC_PHYS  0x0A600000ULL
++
++STATIC UINT32
++PscWatchRead (
++  UINTN  Port
++  )
++{
++  volatile UINT8  *Base;
++
++  if (!gPscWatchArmed) {
++    return 0;
++  }
++
++  Base = (volatile UINT8 *)(UINTN)PSCWATCH_XHC_PHYS;
++  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
++}
++
+ /**
+   Connects one or more drivers to a controller.
+ 
+@@ -65,7 +85,12 @@ CoreConnectController (
+   EFI_DEVICE_PATH_PROTOCOL  *FilePath;
+   EFI_DEVICE_PATH_PROTOCOL  *TempFilePath;
+ 
+-  DEBUG ((DEBUG_ERROR, "CNCT h=%x rec=%d\n", (UINTN)ControllerHandle, (UINTN)Recursive));
++  if (!gPscWatchArmed) {
++    gPscWatchArmed = TRUE;
++    DEBUG ((DEBUG_ERROR, "PSCWATCH armed (first CNCT)\n"));
++  }
++
++  DEBUG ((DEBUG_ERROR, "CNCT h=%x rec=%d p1=%x\n", (UINTN)ControllerHandle, (UINTN)Recursive, PscWatchRead (1)));
+ 
+   //
+   // Make sure ControllerHandle is valid
+@@ -641,19 +666,6 @@ CoreConnectSingleController (
+     for (Index = 0; (Index < NumberOfSortedDriverBindingProtocols) && !DriverFound; Index++) {
+       if (SortedDriverBindingProtocols[Index] != NULL) {
+         DriverBinding = SortedDriverBindingProtocols[Index];
+-        {
+-          EFI_LOADED_IMAGE_PROTOCOL  *BsLi = NULL;
+-
+-          CoreHandleProtocol (
+-            DriverBinding->ImageHandle,
+-            &gEfiLoadedImageProtocolGuid,
+-            (VOID **)&BsLi
+-            );
+-          DEBUG ((DEBUG_ERROR, "BSUP drv=%x base=%x ctrl=%x\n",
+-                  (UINTN)DriverBinding->ImageHandle,
+-                  (BsLi != NULL) ? (UINTN)BsLi->ImageBase : 0,
+-                  (UINTN)ControllerHandle));
+-        }
+         PERF_DRIVER_BINDING_SUPPORT_BEGIN (DriverBinding->DriverBindingHandle, ControllerHandle);
+         Status = DriverBinding->Supported (
+                                   DriverBinding,
+@@ -677,10 +689,11 @@ CoreConnectSingleController (
+               &gEfiLoadedImageProtocolGuid,
+               (VOID **)&BmLi
+               );
+-            DEBUG ((DEBUG_ERROR, "BSTART drv=%x base=%x ctrl=%x\n",
++            DEBUG ((DEBUG_ERROR, "BSTART drv=%x base=%x ctrl=%x p1=%x\n",
+                     (UINTN)DriverBinding->ImageHandle,
+                     (BmLi != NULL) ? (UINTN)BmLi->ImageBase : 0,
+-                    (UINTN)ControllerHandle));
++                    (UINTN)ControllerHandle,
++                    PscWatchRead (1)));
+           }
+           PERF_DRIVER_BINDING_START_BEGIN (DriverBinding->DriverBindingHandle, ControllerHandle);
+           Status = DriverBinding->Start (
+@@ -690,8 +703,8 @@ CoreConnectSingleController (
+                                     );
+           PERF_DRIVER_BINDING_START_END (DriverBinding->DriverBindingHandle, ControllerHandle);
+ 
+-          DEBUG ((DEBUG_ERROR, "BDONE  drv=%x ctrl=%x st=%r\n",
+-                  (UINTN)DriverBinding->ImageHandle, (UINTN)ControllerHandle, Status));
++          DEBUG ((DEBUG_ERROR, "BDONE  drv=%x ctrl=%x st=%r p1=%x\n",
++                  (UINTN)DriverBinding->ImageHandle, (UINTN)ControllerHandle, Status, PscWatchRead (1)));
+ 
+           if (!EFI_ERROR (Status)) {
+             //
+@@ -790,7 +803,7 @@ CoreDisconnectController (
+   PROTOCOL_INTERFACE           *Prot;
+   EFI_DRIVER_BINDING_PROTOCOL  *DriverBinding;
+ 
+-  DEBUG ((DEBUG_ERROR, "DCNCT h=%x drv=%x child=%x\n", (UINTN)ControllerHandle, (UINTN)DriverImageHandle, (UINTN)ChildHandle));
++  DEBUG ((DEBUG_ERROR, "DCNCT h=%x drv=%x child=%x p1=%x\n", (UINTN)ControllerHandle, (UINTN)DriverImageHandle, (UINTN)ChildHandle, PscWatchRead (1)));
+ 
+   //
+   // Make sure ControllerHandle is valid
+-- 
+2.53.0
+
