@@ -27,6 +27,51 @@ typedef struct {
 
 GPIO_BUTTON_SERVICES_PROTOCOL *gBsp = NULL;
 
+// woa-t736b: SimpleTextInputEx instance of ButtonsDxe, kept for input pumps.
+static EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *gButtonsSimpleEx = NULL;
+
+/**
+woa-t736b: PumpButtonsInput
+
+QC ButtonsDxe scans the PMIC button state synchronously inside
+ReadKeyStrokeEx and dispatches registered key-notify callbacks in the same
+call. Nothing in the stock MS boot flow reads input before the boot-time
+hotkey decision (DeviceBootManagerPriorityBoot), so without an explicit
+pump a volume key held since power-on is never scanned and the
+MsButtonServices state always reads "no button".
+
+Pump the input until the queue is drained so that
+- the scan runs (capturing keys still held right now), and
+- every queued key is dispatched to the registered notify (KeyNotify)
+  which latches ButtonState.
+
+Keys consumed here are boot-time hotkeys; consuming them is intended so
+they don't leak into later boot menus as stray input.
+**/
+static
+VOID
+PumpButtonsInput (
+  VOID
+  )
+{
+  EFI_STATUS  Status;
+  EFI_KEY_DATA KeyData;
+  UINTN       i;
+
+  if (gButtonsSimpleEx == NULL) {
+    return;
+  }
+
+  for (i = 0; i < 8; i++) {
+    Status = gButtonsSimpleEx->ReadKeyStrokeEx (gButtonsSimpleEx, &KeyData);
+    if (EFI_ERROR (Status)) {
+      break;
+    }
+    DEBUG ((DEBUG_INFO, "GpioButtons pump: drained key scan=0x%x char=0x%x\n",
+            KeyData.Key.ScanCode, KeyData.Key.UnicodeChar));
+  }
+}
+
 #define MS_BSP_FROM_BSP(a)                                                     \
   BASE_CR(a, GPIO_BUTTON_SERVICES_PROTOCOL, ButtonServicesProtocol)
 
@@ -49,6 +94,10 @@ PreBootVolumeUpButtonThenPowerButtonCheck(
   GPIO_BUTTON_SERVICES_PROTOCOL *Bsp;
 
   DEBUG((DEBUG_VERBOSE, "%a \n", __FUNCTION__));
+
+  // woa-t736b: scan+dispatch pending keys before sampling the latched state,
+  // otherwise a key still held at decision time is never seen.
+  PumpButtonsInput ();
 
   Bsp                                   = MS_BSP_FROM_BSP(This);
   *PreBootVolumeUpButtonThenPowerButton = (Bsp->ButtonState == VolUpButton);
@@ -74,6 +123,10 @@ PreBootVolumeDownButtonThenPowerButtonCheck(
   GPIO_BUTTON_SERVICES_PROTOCOL *Bsp;
 
   DEBUG((DEBUG_VERBOSE, "%a \n", __FUNCTION__));
+
+  // woa-t736b: scan+dispatch pending keys before sampling the latched state.
+  PumpButtonsInput ();
+
   Bsp                                     = MS_BSP_FROM_BSP(This);
   *PreBootVolumeDownButtonThenPowerButton = (Bsp->ButtonState == VolDownButton);
   return EFI_SUCCESS;
@@ -201,6 +254,13 @@ GetButtonState()
          Status));
     goto Exit;
   }
+
+  // woa-t736b: keep the handle for later pumps and scan once right now.
+  // A volume key held since power-on is still held at this point in DXE
+  // (a few seconds in), so the first scan already captures it here instead
+  // of much later in BDS.
+  gButtonsSimpleEx = SimpleEx;
+  PumpButtonsInput ();
 
 Exit:
   return Status;
