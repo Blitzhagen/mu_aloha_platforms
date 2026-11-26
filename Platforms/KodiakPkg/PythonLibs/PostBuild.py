@@ -48,3 +48,16 @@ def makeAndroidImage(outputbin_dir, output_dir, root_dir, device_name, dtb_name)
         "--os_version", "11.0.0",
         "--os_patch_level", "2023-04-01"
     ])
+
+    # samsung-gts7xllite flashing expects the boot image to occupy at least
+    # the stock 734 4KiB pages (3006464 bytes).  mkbootimg already page-aligns
+    # its output, but a smaller compressed payload can legitimately produce
+    # 733 pages; pad reproducibly instead of fixing the image by hand.
+    if device_name == "samsung-gts7xllite":
+        min_image_size = 734 * 4096
+        image_size = os.path.getsize(output_path)
+        if image_size < min_image_size:
+            padding = min_image_size - image_size
+            logging.info("Padding " + device_name + ".img by " + str(padding) + " bytes to " + str(min_image_size))
+            with open(output_path, 'ab') as output_image:
+                output_image.write(bytes(padding))

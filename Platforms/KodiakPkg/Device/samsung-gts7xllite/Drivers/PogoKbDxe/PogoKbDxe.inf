@@ -19,14 +19,11 @@
   MemoryAllocationLib
   BaseMemoryLib
   DebugLib
-  TimerLib
+  UefiLib
 
 [Protocols]
   gEfiSimpleTextInProtocolGuid
   gEfiSimpleTextInputExProtocolGuid
-
-[Guids]
-  gQcomI2CProtocolGuid
 
 [Depex]
   TRUE
