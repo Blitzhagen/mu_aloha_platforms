@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """
-DALSYSDxe v175 patch: populate /dev/i2c11 in-place and recycle the
+DALSYSDxe v176 patch: populate /dev/i2c11 in-place and recycle the
 experimental /dev/i2c4 slot as /dev/SPI7, exactly following
 woa-t736b/re/dalsys-format-report.md section 5.3.  The v175 revision also
-corrects the i2c11 mode/flag bytes and extends the final PE relocation
+corrected the i2c11 mode/flag bytes and extended the final PE relocation
 block with DIR64 entries for the three image-internal clock pointers;
-see woa-t736b/re/pogokb-crash-analysis.md.
+see woa-t736b/re/pogokb-crash-analysis.md.  v176 keeps those bytes but
+repairs the PE metadata regression: the enlarged final relocation block
+must be inside both the base-relocation data directory and the .reloc
+section VirtualSize, otherwise EDK2 rejects DALSYSDxe relocation before
+the driver is even started.
 
 The patch is size-neutral.  It must preserve the four v171 USB-host-fix
 bytes in DALSYSDxe.efi:
@@ -36,6 +40,9 @@ I2C11_CFG_FILE_OFFSET = 0x466F8
 FINAL_RELOC_BLOCK_FILE_OFFSET = 0x4C0E0
 FINAL_RELOC_PAGE_RVA = 0x46000
 FINAL_RELOC_BLOCK_SIZE = 0x1C
+RELOC_DIR_SIZE_FILE_OFFSET = 0xF0C
+RELOC_SECTION_VSIZE_FILE_OFFSET = 0xFB8
+RELOC_DIR_SIZE = 0x50FC
 FINAL_RELOC_ENTRIES = (
     0xAF80, 0xAF88, 0xAF90,  # SPI7 cfg tail pointers 0x46f80/88/90
     0xAFB0, 0xAFB8, 0xAFC0,  # pre-existing SPI7/i2c4-slot pointers
@@ -58,6 +65,8 @@ assert len(SPI7_CFG) == 112
 
 # (offset, bytes, description)
 PATCHES = [
+    (RELOC_DIR_SIZE_FILE_OFFSET, bytes.fromhex("fc500000"), "base relocation directory size 0x50fc"),
+    (RELOC_SECTION_VSIZE_FILE_OFFSET, bytes.fromhex("fc500000"), ".reloc section VirtualSize 0x50fc"),
     (0x466F8, I2C11_CFG, "/dev/i2c11 80-byte config"),
     (0x46F28, SPI7_CFG, "/dev/SPI7 112-byte config over recycled copies"),
     (0x1CBE0, bytes.fromhex("2f6465762f5350493700"), "rename /dev/i2c4 -> /dev/SPI7"),
@@ -89,6 +98,62 @@ def check_v171(data: bytearray, label: str) -> None:
         raise SystemExit(f"ERROR: v171 USB-fix byte mismatch {label}: {detail}")
 
 
+def pe32plus_layout(data: bytearray) -> dict:
+    """Return the PE32+ layout facts needed for relocation validation."""
+    if len(data) < 0x400:
+        raise SystemExit("ERROR: file too small for a PE32+ image")
+    peoff = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[peoff:peoff + 4] != b"PE\0\0":
+        raise SystemExit(f"ERROR: missing PE signature at 0x{peoff:x}")
+    machine, num_sections, _timestamp, _symptr, _nsyms, opt_size, _chars = struct.unpack_from("<HHIIIHH", data, peoff + 4)
+    optoff = peoff + 24
+    magic = struct.unpack_from("<H", data, optoff)[0]
+    if magic != 0x20B:
+        raise SystemExit(f"ERROR: expected PE32+ optional header magic 0x20b, got 0x{magic:x}")
+    num_rva_sizes = struct.unpack_from("<I", data, optoff + 108)[0]
+    if num_rva_sizes <= 5:
+        raise SystemExit(f"ERROR: PE image has no base-relocation directory (NumberOfRvaAndSizes={num_rva_sizes})")
+    reloc_dir_offset = optoff + 112 + 5 * 8
+    reloc_rva, reloc_size = struct.unpack_from("<II", data, reloc_dir_offset)
+    section_table = optoff + opt_size
+    sections = []
+    for index in range(num_sections):
+        off = section_table + index * 40
+        name = bytes(data[off:off + 8]).rstrip(b"\0").decode("ascii", "replace")
+        vsize, va, rawsize, rawptr = struct.unpack_from("<IIII", data, off + 8)
+        sections.append({
+            "index": index,
+            "name": name,
+            "header_offset": off,
+            "vsize_offset": off + 8,
+            "vsize": vsize,
+            "va": va,
+            "rawsize": rawsize,
+            "rawptr": rawptr,
+        })
+    return {
+        "machine": machine,
+        "peoff": peoff,
+        "optoff": optoff,
+        "num_sections": num_sections,
+        "reloc_dir_offset": reloc_dir_offset,
+        "reloc_dir_size_offset": reloc_dir_offset + 4,
+        "reloc_rva": reloc_rva,
+        "reloc_size": reloc_size,
+        "sections": sections,
+    }
+
+
+def rva_to_file_offset(sections: list[dict], rva: int) -> int:
+    for sec in sections:
+        # The file-backed part of a section can extend up to SizeOfRawData;
+        # the loader-visible part is additionally constrained by VirtualSize.
+        span = max(sec["vsize"], sec["rawsize"])
+        if sec["va"] <= rva < sec["va"] + span:
+            return sec["rawptr"] + (rva - sec["va"])
+    raise SystemExit(f"ERROR: RVA 0x{rva:x} is not inside any PE section")
+
+
 def verify(data: bytearray) -> list[str]:
     messages = []
     check_v171(data, "after patch")
@@ -106,18 +171,85 @@ def verify(data: bytearray) -> list[str]:
     if flag_bytes != b"\x00\x00\x01\x00":
         raise SystemExit(f"ERROR: /dev/i2c11 cfg+0x18..+0x1b mismatch: {flag_bytes.hex()}, want 00000100")
 
-    # Parse, rather than merely byte-compare, the final PE base-relocation
-    # block.  It covers the 0x46000 page and must contain nine DIR64 entries
-    # plus one type-0 alignment pad.  In particular the three entries for
-    # 0x46730/0x46738/0x46740 make the i2c11 clock pointers runtime-relocated;
+    # Parse, rather than merely byte-compare, the PE base-relocation metadata.
+    # v175 enlarged the final block from 0x14 to 0x1c bytes but left both the
+    # relocation directory and .reloc VirtualSize at their old end 0x4c0f4.
+    # EDK2 BasePeCoff.c rejects such an image because the final block's
+    # RelocEnd is beyond RelocBaseOrg+RelocDir->Size; in addition the section
+    # loader copies only min(VirtualSize, SizeOfRawData), so bytes after the
+    # old 0x50f4-byte .reloc VirtualSize would not even be present in memory.
+    layout = pe32plus_layout(data)
+    if layout["reloc_dir_size_offset"] != RELOC_DIR_SIZE_FILE_OFFSET:
+        raise SystemExit(
+            f"ERROR: relocation-directory size field is at 0x{layout['reloc_dir_size_offset']:x}, "
+            f"patch constant expects 0x{RELOC_DIR_SIZE_FILE_OFFSET:x}"
+        )
+    if layout["reloc_rva"] != 0x47000:
+        raise SystemExit(f"ERROR: unexpected relocation directory RVA 0x{layout['reloc_rva']:x}, want 0x47000")
+    if layout["reloc_size"] != RELOC_DIR_SIZE:
+        raise SystemExit(f"ERROR: relocation directory size is 0x{layout['reloc_size']:x}, want 0x{RELOC_DIR_SIZE:x}")
+
+    reloc_sections = [s for s in layout["sections"] if s["va"] <= layout["reloc_rva"] < s["va"] + max(s["vsize"], s["rawsize"])]
+    if len(reloc_sections) != 1:
+        raise SystemExit(f"ERROR: expected exactly one section containing relocation RVA 0x47000, got {len(reloc_sections)}")
+    reloc_sec = reloc_sections[0]
+    if reloc_sec["name"] != ".reloc":
+        raise SystemExit(f"ERROR: relocation directory is in section {reloc_sec['name']!r}, want '.reloc'")
+    if reloc_sec["vsize_offset"] != RELOC_SECTION_VSIZE_FILE_OFFSET:
+        raise SystemExit(
+            f"ERROR: .reloc VirtualSize field is at 0x{reloc_sec['vsize_offset']:x}, "
+            f"patch constant expects 0x{RELOC_SECTION_VSIZE_FILE_OFFSET:x}"
+        )
+    if reloc_sec["vsize"] != RELOC_DIR_SIZE:
+        raise SystemExit(f"ERROR: .reloc VirtualSize is 0x{reloc_sec['vsize']:x}, want 0x{RELOC_DIR_SIZE:x}")
+    # This is the exact copy-length rule in EDK2 BasePeCoff.c: zero or
+    # overlarge VirtualSize means SizeOfRawData, otherwise VirtualSize wins.
+    edk2_copy_len = reloc_sec["rawsize"] if reloc_sec["vsize"] == 0 or reloc_sec["vsize"] > reloc_sec["rawsize"] else reloc_sec["vsize"]
+    reloc_sec_off = layout["reloc_rva"] - reloc_sec["va"]
+    if reloc_sec_off + layout["reloc_size"] > edk2_copy_len:
+        raise SystemExit(
+            f"ERROR: relocation directory end exceeds EDK2-copied .reloc bytes: "
+            f"secoff=0x{reloc_sec_off:x} size=0x{layout['reloc_size']:x} copylen=0x{edk2_copy_len:x}"
+        )
+
+    reloc_file_start = rva_to_file_offset(layout["sections"], layout["reloc_rva"])
+    reloc_file_end = reloc_file_start + layout["reloc_size"]
+    if reloc_file_end > len(data):
+        raise SystemExit("ERROR: relocation directory extends beyond end of file")
+    blocks = []
+    pos = reloc_file_start
+    while pos < reloc_file_end:
+        page, bsz = struct.unpack_from("<II", data, pos)
+        if bsz == 0:
+            raise SystemExit(f"ERROR: zero-sized relocation block at file offset 0x{pos:x}")
+        if bsz < 8 or (bsz & 1):
+            raise SystemExit(f"ERROR: malformed relocation block at file offset 0x{pos:x}: size 0x{bsz:x}")
+        block_end = pos + bsz
+        if block_end > reloc_file_end:
+            raise SystemExit(
+                f"ERROR: relocation block at file offset 0x{pos:x} ends at 0x{block_end:x}, "
+                f"beyond directory end 0x{reloc_file_end:x} (EDK2 RETURN_LOAD_ERROR condition)"
+            )
+        entry_count = (bsz - 8) // 2
+        entries_here = struct.unpack_from(f"<{entry_count}H", data, pos + 8) if entry_count else ()
+        blocks.append((pos, page, bsz, entries_here))
+        pos = block_end
+    if pos != reloc_file_end:
+        raise SystemExit(f"ERROR: relocation chain ended at 0x{pos:x}, directory end is 0x{reloc_file_end:x}")
+    if not blocks or blocks[-1][0] != FINAL_RELOC_BLOCK_FILE_OFFSET:
+        got = hex(blocks[-1][0]) if blocks else "none"
+        raise SystemExit(f"ERROR: final relocation block is at {got}, want 0x{FINAL_RELOC_BLOCK_FILE_OFFSET:x}")
+
+    # The final block covers the 0x46000 page and must contain nine DIR64
+    # entries plus one type-0 alignment pad.  In particular the three entries
+    # for 0x46730/0x46738/0x46740 make the i2c11 clock pointers runtime-relocated;
     # without them i2c_open dereferences raw RVAs such as 0x2b890 and faults.
-    page_rva, block_size = struct.unpack_from("<II", data, FINAL_RELOC_BLOCK_FILE_OFFSET)
+    _final_off, page_rva, block_size, entries = blocks[-1]
     if page_rva != FINAL_RELOC_PAGE_RVA or block_size != FINAL_RELOC_BLOCK_SIZE:
         raise SystemExit(
             f"ERROR: final relocation block header mismatch: page=0x{page_rva:x} size=0x{block_size:x}, "
             f"want page=0x{FINAL_RELOC_PAGE_RVA:x} size=0x{FINAL_RELOC_BLOCK_SIZE:x}"
         )
-    entries = struct.unpack_from("<10H", data, FINAL_RELOC_BLOCK_FILE_OFFSET + 8)
     if entries != FINAL_RELOC_ENTRIES:
         got = " ".join(f"{e:04x}" for e in entries)
         want = " ".join(f"{e:04x}" for e in FINAL_RELOC_ENTRIES)
@@ -192,6 +324,7 @@ def verify(data: bytearray) -> list[str]:
     messages.append(f"/dev/SPI7:  device[{spi_idx}] stream=blob+0x{spi_stream:x} struct=66 cfg=0x46f28 phys=0x980000")
     messages.append("v171 USB-fix bytes preserved")
     messages.append("i2c11 cfg+0x18..+0x1b = 00 00 01 00")
+    messages.append("reloc directory size and .reloc VirtualSize = 0x50fc; chain ends exactly at directory end")
     messages.append("final reloc block page=0x46000 size=0x1c entries include DIR64 0x46730/0x46738/0x46740")
     return messages
 
