@@ -30,6 +30,19 @@
 #define BLKTRACE_SCAN_TPL     TPL_CALLBACK
 #define BLKTRACE_MAX_ERRLOGS  4
 
+/*
+  v180 winload liveness probe: hook the central memory boot services in the
+  boot-services table itself (same technique as KernelErrataPatcher uses for
+  ExitBootServices).  Everything winload does before ExitBootServices —
+  kernel/hive loading, handoff structure building, ACPI table copying —
+  allocates memory through these services.  A rate-limited heartbeat plus
+  immediate failure prints answer the key blackbox question: is winload
+  still alive and working after the ramdisk reads end, or frozen/crashed?
+*/
+#define BSLIVE_HEARTBEAT      4096
+#define BSLIVE_MAX_FAILLOGS   8
+#define BSLIVE_GMM_PRINT_MOD  16
+
 typedef struct {
   BOOLEAN                    InUse;
   BOOLEAN                    Logical;
@@ -58,6 +71,24 @@ STATIC EFI_EVENT      mProtocolNotifyEvent;
 STATIC BOOLEAN        mProtocolNotifyRegistered;
 STATIC EFI_EVENT      mExitBootServicesEvent;
 
+STATIC EFI_ALLOCATE_PAGES   mOrigAllocatePages;
+STATIC EFI_ALLOCATE_POOL    mOrigAllocatePool;
+STATIC EFI_FREE_PAGES       mOrigFreePages;
+STATIC EFI_FREE_POOL        mOrigFreePool;
+STATIC EFI_GET_MEMORY_MAP   mOrigGetMemoryMap;
+STATIC BOOLEAN              mBsHooksInstalled;
+STATIC UINT64               mApCalls;
+STATIC UINT64               mApFail;
+STATIC UINT64               mPoolCalls;
+STATIC UINT64               mPoolFail;
+STATIC UINT64               mFpCalls;
+STATIC UINT64               mFpoolCalls;
+STATIC UINT64               mGmmCalls;
+STATIC UINT64               mGmmFail;
+STATIC UINT64               mBsEvents;
+STATIC UINT32               mApFailPrints;
+STATIC UINT32               mPoolFailPrints;
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -68,6 +99,239 @@ TracedReadBlocks (
   IN UINTN                  BufferSize,
   OUT VOID                  *Buffer
   );
+
+STATIC
+VOID
+BlkTracePrint (
+  IN CONST CHAR8  *Format,
+  ...
+  );
+
+/*
+  Heartbeat is deliberately cheap: one short line per 4096 boot-service
+  memory events.  During a healthy winload phase thousands of allocations
+  are expected, so a continuing heartbeat after the last BLKRD line means
+  winload is alive and working; an abrupt stop means frozen/crashed.
+*/
+STATIC
+VOID
+BsLiveEvent (
+  VOID
+  )
+{
+  mBsEvents++;
+  if ((mBsEvents % BSLIVE_HEARTBEAT) == 0) {
+    BlkTracePrint (
+      "BSHB: ev=%lu ap=%lu pool=%lu gmm=%lu af=%lu pf=%lu\n",
+      mBsEvents,
+      mApCalls,
+      mPoolCalls,
+      mGmmCalls,
+      mApFail,
+      mPoolFail
+      );
+  }
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedAllocatePages (
+  IN     EFI_ALLOCATE_TYPE    Type,
+  IN     EFI_MEMORY_TYPE      MemoryType,
+  IN     UINTN                Pages,
+  IN OUT EFI_PHYSICAL_ADDRESS *Memory
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = mOrigAllocatePages (Type, MemoryType, Pages, Memory);
+  mApCalls++;
+  if (EFI_ERROR (Status)) {
+    mApFail++;
+    if (mApFailPrints < BSLIVE_MAX_FAILLOGS) {
+      mApFailPrints++;
+      BlkTracePrint (
+        "BSAF: st=0x%lx type=%u mt=0x%x pages=%lx\n",
+        (UINT64)Status,
+        (UINT32)Type,
+        (UINT32)MemoryType,
+        (UINT64)Pages
+        );
+    }
+  }
+  BsLiveEvent ();
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedAllocatePool (
+  IN  EFI_MEMORY_TYPE  PoolType,
+  IN  UINTN            Size,
+  OUT VOID             **Buffer
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = mOrigAllocatePool (PoolType, Size, Buffer);
+  mPoolCalls++;
+  if (EFI_ERROR (Status)) {
+    mPoolFail++;
+    if (mPoolFailPrints < BSLIVE_MAX_FAILLOGS) {
+      mPoolFailPrints++;
+      BlkTracePrint (
+        "BSPF: st=0x%lx mt=0x%x size=%lx\n",
+        (UINT64)Status,
+        (UINT32)PoolType,
+        (UINT64)Size
+        );
+    }
+  }
+  BsLiveEvent ();
+  return Status;
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedFreePages (
+  IN EFI_PHYSICAL_ADDRESS  Memory,
+  IN UINTN                 Pages
+  )
+{
+  mFpCalls++;
+  BsLiveEvent ();
+  return mOrigFreePages (Memory, Pages);
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedFreePool (
+  IN VOID  *Buffer
+  )
+{
+  mFpoolCalls++;
+  BsLiveEvent ();
+  return mOrigFreePool (Buffer);
+}
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedGetMemoryMap (
+  IN OUT UINTN                  *MemoryMapSize,
+  IN OUT EFI_MEMORY_DESCRIPTOR  *MemoryMap,
+  OUT    UINTN                  *MapKey,
+  OUT    UINTN                  *DescriptorSize,
+  OUT    UINT32                 *DescriptorVersion
+  )
+{
+  EFI_STATUS  Status;
+
+  Status = mOrigGetMemoryMap (
+             MemoryMapSize,
+             MemoryMap,
+             MapKey,
+             DescriptorSize,
+             DescriptorVersion
+             );
+  mGmmCalls++;
+  if (EFI_ERROR (Status)) {
+    mGmmFail++;
+    BlkTracePrint (
+      "BSGF: st=0x%lx reqsize=%lx\n",
+      (UINT64)Status,
+      (UINT64)(MemoryMapSize != NULL ? *MemoryMapSize : 0)
+      );
+  } else if ((mGmmCalls % BSLIVE_GMM_PRINT_MOD) == 0) {
+    BlkTracePrint (
+      "BSGM: n=%lu size=%lx\n",
+      mGmmCalls,
+      (UINT64)(MemoryMapSize != NULL ? *MemoryMapSize : 0)
+      );
+  }
+  BsLiveEvent ();
+  return Status;
+}
+
+/*
+  Install the probes by replacing the function pointers in the boot services
+  table and re-sealing the table CRC, exactly like the KernelErrataPatcher
+  does for ExitBootServices.  All failures are non-fatal for the tracer.
+*/
+STATIC
+VOID
+InstallBsLivenessProbes (
+  VOID
+  )
+{
+  if (mBsHooksInstalled) {
+    return;
+  }
+
+  mOrigAllocatePages = gBS->AllocatePages;
+  mOrigAllocatePool  = gBS->AllocatePool;
+  mOrigFreePages     = gBS->FreePages;
+  mOrigFreePool      = gBS->FreePool;
+  mOrigGetMemoryMap  = gBS->GetMemoryMap;
+
+  if ((mOrigAllocatePages == NULL) || (mOrigAllocatePool == NULL) ||
+      (mOrigFreePages == NULL) || (mOrigFreePool == NULL) ||
+      (mOrigGetMemoryMap == NULL)) {
+    BlkTracePrint ("BSHOOK-WARN: missing originals, probes not installed\n");
+    return;
+  }
+
+  gBS->AllocatePages = TracedAllocatePages;
+  gBS->AllocatePool  = TracedAllocatePool;
+  gBS->FreePages     = TracedFreePages;
+  gBS->FreePool      = TracedFreePool;
+  gBS->GetMemoryMap  = TracedGetMemoryMap;
+
+  gBS->Hdr.CRC32     = 0;
+  gBS->CalculateCrc32 (gBS, sizeof (EFI_BOOT_SERVICES), &gBS->Hdr.CRC32);
+
+  mBsHooksInstalled = TRUE;
+  BlkTracePrint ("BSHOOK: bs memory probes installed\n");
+}
+
+STATIC
+VOID
+RemoveBsLivenessProbes (
+  VOID
+  )
+{
+  if (!mBsHooksInstalled) {
+    return;
+  }
+
+  gBS->AllocatePages = mOrigAllocatePages;
+  gBS->AllocatePool  = mOrigAllocatePool;
+  gBS->FreePages     = mOrigFreePages;
+  gBS->FreePool      = mOrigFreePool;
+  gBS->GetMemoryMap  = mOrigGetMemoryMap;
+
+  gBS->Hdr.CRC32     = 0;
+  gBS->CalculateCrc32 (gBS, sizeof (EFI_BOOT_SERVICES), &gBS->Hdr.CRC32);
+
+  mBsHooksInstalled = FALSE;
+
+  BlkTracePrint (
+    "BSEND: ev=%lu ap=%lu pool=%lu gmm=%lu fp=%lu fpool=%lu af=%lu pf=%lu gmfail=%lu\n",
+    mBsEvents,
+    mApCalls,
+    mPoolCalls,
+    mGmmCalls,
+    mFpCalls,
+    mFpoolCalls,
+    mApFail,
+    mPoolFail,
+    mGmmFail
+    );
+}
 
 /*
   Direct SerialPortWrite output is intentional.  On this platform the
@@ -357,6 +621,8 @@ ExitBootServicesNotify (
     gBS->SetTimer (mScanTimerEvent, TimerCancel, 0);
   }
 
+  RemoveBsLivenessProbes ();
+
   BlkTracePrint (
     "BLKRD-END: total=%lu bytes (%lu MiB) reads=%lu hooks=%u logical=%u notify=%u\n",
     mPrimaryBytes,
@@ -381,6 +647,7 @@ BlkTraceDxeEntry (
   mSerialReady = !RETURN_ERROR (SerialPortInitialize ());
 
   BlkTracePrint ("BLKRD-INIT\n");
+  InstallBsLivenessProbes ();
   ScanUsbOrRemovableBlockIo ();
 
   Registration = NULL;
