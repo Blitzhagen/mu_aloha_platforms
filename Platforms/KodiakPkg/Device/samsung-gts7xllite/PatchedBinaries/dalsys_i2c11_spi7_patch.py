@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-DALSYSDxe v176 patch: populate /dev/i2c11 in-place and recycle the
-experimental /dev/i2c4 slot as /dev/SPI7, exactly following
-woa-t736b/re/dalsys-format-report.md section 5.3.  The v175 revision also
-corrected the i2c11 mode/flag bytes and extended the final PE relocation
-block with DIR64 entries for the three image-internal clock pointers;
-see woa-t736b/re/pogokb-crash-analysis.md.  v176 keeps those bytes but
-repairs the PE metadata regression: the enlarged final relocation block
-must be inside both the base-relocation data directory and the .reloc
-section VirtualSize, otherwise EDK2 rejects DALSYSDxe relocation before
-the driver is even started.
+DALSYSDxe v178 patch: populate /dev/i2c11 in-place while preserving the
+v61 /dev/i2c4 and /dev/i2c9 nodes required by Samsung's stock SM5714
+drivers.  v174-v177 incorrectly recycled /dev/i2c4 as /dev/SPI7; that
+made MuicDxe fail i2c_open(4) with i2c_status 28 and hit its unconditional
+Sm5714MuicLib.c line-445 assert.  v178 therefore keeps the i2c11 config
+and the v176 PE relocation-metadata repair, but restores the i2c4 device
+name/hash, the v61 stream struct indexes (i2c4 -> 5, i2c9 -> 4), the two
+now-unreferenced copied config structs, and their original relocation
+entries.  /dev/SPI7 is intentionally not populated by this revision.
 
 The patch is size-neutral.  It must preserve the four v171 USB-host-fix
 bytes in DALSYSDxe.efi:
@@ -44,8 +43,8 @@ RELOC_DIR_SIZE_FILE_OFFSET = 0xF0C
 RELOC_SECTION_VSIZE_FILE_OFFSET = 0xFB8
 RELOC_DIR_SIZE = 0x50FC
 FINAL_RELOC_ENTRIES = (
-    0xAF80, 0xAF88, 0xAF90,  # SPI7 cfg tail pointers 0x46f80/88/90
-    0xAFB0, 0xAFB8, 0xAFC0,  # pre-existing SPI7/i2c4-slot pointers
+    0xAF60, 0xAF68, 0xAF70,  # unreferenced i2c4-copy cfg clock pointers 0x46f60/68/70
+    0xAFB0, 0xAFB8, 0xAFC0,  # unreferenced i2c9-copy cfg clock pointers 0x46fb0/b8/c0
     0xA730, 0xA738, 0xA740,  # i2c11 clock pointers 0x46730/38/40
     0x0000,                  # type-0 alignment pad
 )
@@ -53,29 +52,34 @@ FINAL_RELOC_ENTRIES = (
 I2C11_CFG = bytes.fromhex(
     "000090000000000000009c000000000000000900010b04000000010000000a0051800100418001000000fc0100000000000000000000000090b802000000000018b902000000000038b9020000000000"
 )
-SPI7_CFG = bytes.fromhex(
-    "000090000000000000009c000000000000000800010700000001000000000600"
-    "00000000d1000400e140040001410400f1400400d0000000e000000000010000"
-    "f0000000000000000000fc0100000000000000000000000090b8020000000000"
-    "f8b802000000000038b9020000000000"
+# v61/v173 state of the two 80-byte copied i2c4/i2c9 config structs at
+# 0x46f28/0x46f78.  They are unreferenced because the v61 streams point at
+# stock struct indexes 5/4, but preserving them avoids carrying v174's
+# overlapping SPI7 experiment forward as dead corrupted data.
+I2C4_I2C9_COPY_CFGS = bytes.fromhex(
+    "000090000000000000009c000000000000c00800000403000000010000000300"
+    "d1800100c18001000000fc01000000000000000000000000f8cb010000000000"
+    "60cc01000000000010cf0100000000000000a000000000000000ac0000000000"
+    "0000080001090000000001000000080011820100018201000000fc0100000000"
+    "000000000000000020cc01000000000088cc01000000000010cf010000000000"
 )
 
 assert len(I2C11_CFG) == 80
-assert len(SPI7_CFG) == 112
+assert len(I2C4_I2C9_COPY_CFGS) == 160
 
 # (offset, bytes, description)
 PATCHES = [
     (RELOC_DIR_SIZE_FILE_OFFSET, bytes.fromhex("fc500000"), "base relocation directory size 0x50fc"),
     (RELOC_SECTION_VSIZE_FILE_OFFSET, bytes.fromhex("fc500000"), ".reloc section VirtualSize 0x50fc"),
     (0x466F8, I2C11_CFG, "/dev/i2c11 80-byte config"),
-    (0x46F28, SPI7_CFG, "/dev/SPI7 112-byte config over recycled copies"),
-    (0x1CBE0, bytes.fromhex("2f6465762f5350493700"), "rename /dev/i2c4 -> /dev/SPI7"),
-    (0x1C740, bytes.fromhex("25852814"), "DJB2 hash /dev/SPI7 = 0x14288525"),
-    (0x1CBCC, bytes.fromhex("42000000"), "stream payload struct index 66"),
+    (0x46F28, I2C4_I2C9_COPY_CFGS, "restore unreferenced i2c4/i2c9 copied configs"),
+    (0x1CBE0, bytes.fromhex("2f6465762f6932633400"), "restore /dev/i2c4 device name"),
+    (0x1C740, bytes.fromhex("34193414"), "DJB2 hash /dev/i2c4 = 0x14341934"),
+    (0x1CBCC, bytes.fromhex("05000000"), "restore /dev/i2c4 stream payload struct index 5"),
     (0x4C0E4, bytes.fromhex("1c000000"), "final relocation block size 0x1c (nine DIR64 entries + pad)"),
-    (0x4C0E8, bytes.fromhex("80af"), "reloc config+0x58 -> 0x46f80"),
-    (0x4C0EA, bytes.fromhex("88af"), "reloc config+0x60 -> 0x46f88"),
-    (0x4C0EC, bytes.fromhex("90af"), "reloc config+0x68 -> 0x46f90"),
+    (0x4C0E8, bytes.fromhex("60af"), "reloc i2c4-copy cfg+0x38 -> 0x46f60"),
+    (0x4C0EA, bytes.fromhex("68af"), "reloc i2c4-copy cfg+0x40 -> 0x46f68"),
+    (0x4C0EC, bytes.fromhex("70af"), "reloc i2c4-copy cfg+0x48 -> 0x46f70"),
     (0x4C0F4, bytes.fromhex("30a738a740a70000"), "reloc i2c11 clock pointers 0x46730/0x46738/0x46740 + align pad"),
 ]
 
@@ -299,29 +303,53 @@ def verify(data: bytearray) -> list[str]:
         return payload
 
     i2c_idx, _, i2c_hash, i2c_stream = device(b"/dev/i2c11")
-    spi_idx, _, spi_hash, spi_stream = device(b"/dev/SPI7")
+    i2c4_idx, _, i2c4_hash, i2c4_stream = device(b"/dev/i2c4")
+    i2c9_idx, _, i2c9_hash, i2c9_stream = device(b"/dev/i2c9")
     if i2c_hash != 0x9AB73F82:
         raise SystemExit(f"ERROR: /dev/i2c11 hash mismatch: 0x{i2c_hash:08x}")
-    if spi_hash != 0x14288525:
-        raise SystemExit(f"ERROR: /dev/SPI7 hash mismatch: 0x{spi_hash:08x}")
+    if i2c4_hash != 0x14341934:
+        raise SystemExit(f"ERROR: /dev/i2c4 hash mismatch: 0x{i2c4_hash:08x}")
+    if i2c9_hash != 0x14341939:
+        raise SystemExit(f"ERROR: /dev/i2c9 hash mismatch: 0x{i2c9_hash:08x}")
     if stream_struct_index(i2c_stream) != 6:
         raise SystemExit("ERROR: /dev/i2c11 stream does not reference struct index 6")
-    if stream_struct_index(spi_stream) != 66:
-        raise SystemExit("ERROR: /dev/SPI7 stream does not reference struct index 66")
+    if stream_struct_index(i2c4_stream) != 5:
+        raise SystemExit("ERROR: /dev/i2c4 stream does not reference stock struct index 5")
+    if stream_struct_index(i2c9_stream) != 4:
+        raise SystemExit("ERROR: /dev/i2c9 stream does not reference stock struct index 4")
     if struct_ptr(6) != 0x466F8:
         raise SystemExit("ERROR: struct index 6 does not point at 0x466f8")
-    if struct_ptr(66) != 0x46F28:
-        raise SystemExit("ERROR: struct index 66 does not point at 0x46f28")
+    if struct_ptr(5) != 0x2B9D0:
+        raise SystemExit("ERROR: stock struct index 5 does not point at 0x2b9d0")
+    if struct_ptr(4) != 0x2B980:
+        raise SystemExit("ERROR: stock struct index 4 does not point at 0x2b980")
+    if struct_ptr(66) != 0x46F28 or struct_ptr(67) != 0x46F78:
+        raise SystemExit("ERROR: dead copied-config struct entries 66/67 do not point at 0x46f28/0x46f78")
+
+    spi7_hash = djb2(b"/dev/SPI7")
+    spi7_rows = []
+    for i in range(numdevs):
+        ent = dev_tbl + i * 0x28
+        name_ptr, h, _stream_off = struct.unpack_from("<QII", data, ent)
+        if h == spi7_hash or cstr(name_ptr) == b"/dev/SPI7":
+            spi7_rows.append(i)
+    if spi7_rows:
+        raise SystemExit(f"ERROR: /dev/SPI7 must be absent in v178, found device rows {spi7_rows}")
 
     i2c_base, i2c_common, i2c_off = struct.unpack_from("<QQI", data, 0x466F8)
-    spi_base, spi_common, spi_off = struct.unpack_from("<QQI", data, 0x46F28)
+    i2c4_base, i2c4_common, i2c4_off = struct.unpack_from("<QQI", data, 0x2B9D0)
+    i2c9_base, i2c9_common, i2c9_off = struct.unpack_from("<QQI", data, 0x2B980)
     if i2c_base + i2c_off != 0x990000 or i2c_common != 0x9C0000:
         raise SystemExit(f"ERROR: /dev/i2c11 physical address decode mismatch: base={i2c_base:x} common={i2c_common:x} off={i2c_off:x}")
-    if spi_base + spi_off != 0x980000 or spi_common != 0x9C0000:
-        raise SystemExit(f"ERROR: /dev/SPI7 physical address decode mismatch: base={spi_base:x} common={spi_common:x} off={spi_off:x}")
+    if i2c4_base + i2c4_off != 0x984000 or i2c4_common != 0x9C0000:
+        raise SystemExit(f"ERROR: /dev/i2c4 physical address decode mismatch: base={i2c4_base:x} common={i2c4_common:x} off={i2c4_off:x}")
+    if i2c9_base + i2c9_off != 0x888000 or i2c9_common != 0x8C0000:
+        raise SystemExit(f"ERROR: /dev/i2c9 physical address decode mismatch: base={i2c9_base:x} common={i2c9_common:x} off={i2c9_off:x}")
 
     messages.append(f"/dev/i2c11: device[{i2c_idx}] stream=blob+0x{i2c_stream:x} struct=6 cfg=0x466f8 phys=0x990000")
-    messages.append(f"/dev/SPI7:  device[{spi_idx}] stream=blob+0x{spi_stream:x} struct=66 cfg=0x46f28 phys=0x980000")
+    messages.append(f"/dev/i2c4:  device[{i2c4_idx}] stream=blob+0x{i2c4_stream:x} struct=5 cfg=0x2b9d0 phys=0x984000")
+    messages.append(f"/dev/i2c9:  device[{i2c9_idx}] stream=blob+0x{i2c9_stream:x} struct=4 cfg=0x2b980 phys=0x888000")
+    messages.append("/dev/SPI7:  absent (v178 restores stock SM5714 buses; SPI7 recycling reverted)")
     messages.append("v171 USB-fix bytes preserved")
     messages.append("i2c11 cfg+0x18..+0x1b = 00 00 01 00")
     messages.append("reloc directory size and .reloc VirtualSize = 0x50fc; chain ends exactly at directory end")
