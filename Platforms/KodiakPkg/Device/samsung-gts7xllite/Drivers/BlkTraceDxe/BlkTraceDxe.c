@@ -241,11 +241,18 @@ TracedGetMemoryMap (
   mGmmCalls++;
   if (EFI_ERROR (Status)) {
     mGmmFail++;
-    BlkTracePrint (
-      "BSGF: st=0x%lx reqsize=%lx\n",
-      (UINT64)Status,
-      (UINT64)(MemoryMapSize != NULL ? *MemoryMapSize : 0)
-      );
+    /*
+      EFI_BUFFER_TOO_SMALL is the normal first pass of the standard
+      size-probe pattern and must not print (log flood).  Only genuinely
+      anomalous GetMemoryMap failures are interesting.
+    */
+    if (Status != EFI_BUFFER_TOO_SMALL) {
+      BlkTracePrint (
+        "BSGF: st=0x%lx reqsize=%lx\n",
+        (UINT64)Status,
+        (UINT64)(MemoryMapSize != NULL ? *MemoryMapSize : 0)
+        );
+    }
   } else if ((mGmmCalls % BSLIVE_GMM_PRINT_MOD) == 0) {
     BlkTracePrint (
       "BSGM: n=%lu size=%lx\n",
