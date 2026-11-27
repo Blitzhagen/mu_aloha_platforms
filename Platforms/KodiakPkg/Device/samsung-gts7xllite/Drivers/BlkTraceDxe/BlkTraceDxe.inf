@@ -1,0 +1,35 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = BlkTraceDxe
+  FILE_GUID                      = c98d6ca1-6188-4b24-ae54-468bd5ad9111
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = BlkTraceDxeEntry
+
+[Sources]
+  BlkTraceDxe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  MemoryAllocationLib
+  BaseMemoryLib
+  BaseLib
+  UefiLib
+  DevicePathLib
+  PrintLib
+  SerialPortLib
+
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiDevicePathProtocolGuid
+
+[Guids]
+  gEfiEventExitBootServicesGuid
+
+[Depex]
+  TRUE

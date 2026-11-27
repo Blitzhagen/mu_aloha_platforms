@@ -1,0 +1,440 @@
+/*
+  Minimal removable-media BlockIo read tracer.
+
+  v175 diagnostic for the Windows boot black box: hook removable-media
+  EFI_BLOCK_IO_PROTOCOL instances, count successful ReadBlocks bytes, and
+  emit sparse serial/pstore progress lines.  The tracer is deliberately
+  passive for all error paths in its own setup: a tracer failure must never
+  become a boot blocker.
+*/
+
+#include <Uefi.h>
+
+#include <Guid/EventGroup.h>
+#include <Protocol/BlockIo.h>
+#include <Protocol/DevicePath.h>
+
+#include <Library/BaseLib.h>
+#include <Library/BaseMemoryLib.h>
+#include <Library/DevicePathLib.h>
+#include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
+#include <Library/SerialPortLib.h>
+#include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
+
+#define BLKTRACE_MAX_HOOKS    32
+#define BLKTRACE_REPORT_MIB   64
+#define BLKTRACE_MIB          0x100000ULL
+#define BLKTRACE_SCAN_MS      50
+#define BLKTRACE_MAX_ERRLOGS  4
+
+typedef struct {
+  BOOLEAN                    InUse;
+  BOOLEAN                    Logical;
+  BOOLEAN                    Usb;
+  UINT32                     ErrorPrints;
+  UINTN                      Index;
+  EFI_HANDLE                 Handle;
+  EFI_BLOCK_IO_PROTOCOL      *BlockIo;
+  EFI_BLOCK_READ             OriginalReadBlocks;
+  UINT64                     TotalBytes;
+  UINT64                     TotalReads;
+} BLKTRACE_HOOK;
+
+STATIC BLKTRACE_HOOK  mHooks[BLKTRACE_MAX_HOOKS];
+STATIC UINTN          mHookCount;
+STATIC UINTN          mLogicalHookCount;
+STATIC UINT64         mPrimaryBytes;
+STATIC UINT64         mPrimaryReads;
+STATIC UINT64         mNextReportBytes = BLKTRACE_REPORT_MIB * BLKTRACE_MIB;
+STATIC BOOLEAN        mStartPrinted;
+STATIC BOOLEAN        mEndPrinted;
+STATIC BOOLEAN        mTableFullPrinted;
+STATIC BOOLEAN        mSerialReady;
+STATIC EFI_EVENT      mScanTimerEvent;
+STATIC EFI_EVENT      mProtocolNotifyEvent;
+STATIC BOOLEAN        mProtocolNotifyRegistered;
+STATIC EFI_EVENT      mExitBootServicesEvent;
+
+STATIC
+EFI_STATUS
+EFIAPI
+TracedReadBlocks (
+  IN EFI_BLOCK_IO_PROTOCOL  *This,
+  IN UINT32                 MediaId,
+  IN EFI_LBA                Lba,
+  IN UINTN                  BufferSize,
+  OUT VOID                  *Buffer
+  );
+
+/*
+  Direct SerialPortWrite output is intentional.  On this platform the
+  SerialPortLib implementation writes to the framebuffer, the memory log,
+  and the ramoops/pmsg zones without depending on the DEBUG print level.
+*/
+STATIC
+VOID
+BlkTracePrint (
+  IN CONST CHAR8  *Format,
+  ...
+  )
+{
+  CHAR8   Buffer[192];
+  VA_LIST Marker;
+  UINTN   Length;
+
+  if (!mSerialReady) {
+    return;
+  }
+
+  VA_START (Marker, Format);
+  Length = AsciiVSPrint (Buffer, sizeof (Buffer), Format, Marker);
+  VA_END (Marker);
+
+  if (Length != 0) {
+    SerialPortWrite ((UINT8 *)Buffer, Length);
+  }
+}
+
+STATIC
+BLKTRACE_HOOK *
+FindHook (
+  IN EFI_BLOCK_IO_PROTOCOL  *BlockIo
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; Index < mHookCount; Index++) {
+    if (mHooks[Index].InUse && (mHooks[Index].BlockIo == BlockIo)) {
+      return &mHooks[Index];
+    }
+  }
+
+  return NULL;
+}
+
+/*
+  USB sticks do not consistently set the SCSI/UFI removable-media bit.
+  Treat a handle as USB either when its media claims to be removable or when
+  its device path contains a USB messaging node.  On the observed v172 stick
+  the relevant paths were Pci(0x80,0x0)/USB(0x1,0x0) plus its HD(...) child.
+*/
+STATIC
+BOOLEAN
+HasUsbDevicePathNode (
+  IN EFI_HANDLE  Handle
+  )
+{
+  EFI_STATUS                Status;
+  EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
+
+  DevicePath = NULL;
+  Status     = gBS->HandleProtocol (
+                      Handle,
+                      &gEfiDevicePathProtocolGuid,
+                      (VOID **)&DevicePath
+                      );
+  if (EFI_ERROR (Status) || (DevicePath == NULL)) {
+    return FALSE;
+  }
+
+  while (!IsDevicePathEndType (DevicePath)) {
+    if ((DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) &&
+        (DevicePathSubType (DevicePath) == MSG_USB_DP)) {
+      return TRUE;
+    }
+    DevicePath = NextDevicePathNode (DevicePath);
+  }
+
+  return FALSE;
+}
+
+STATIC
+VOID
+HookBlockIo (
+  IN EFI_HANDLE             Handle,
+  IN EFI_BLOCK_IO_PROTOCOL  *BlockIo
+  )
+{
+  BLKTRACE_HOOK       *Hook;
+  EFI_BLOCK_IO_MEDIA  *Media;
+  BOOLEAN             Usb;
+
+  if ((BlockIo == NULL) || (BlockIo->Media == NULL) || (BlockIo->ReadBlocks == NULL)) {
+    return;
+  }
+
+  Media = BlockIo->Media;
+  Usb   = HasUsbDevicePathNode (Handle);
+  if (!Media->MediaPresent || (!Media->RemovableMedia && !Usb)) {
+    return;
+  }
+
+  if ((FindHook (BlockIo) != NULL) || (BlockIo->ReadBlocks == TracedReadBlocks)) {
+    return;
+  }
+
+  if (mHookCount >= BLKTRACE_MAX_HOOKS) {
+    if (!mTableFullPrinted) {
+      mTableFullPrinted = TRUE;
+      BlkTracePrint ("BLKRD-WARN: hook table full\n");
+    }
+    return;
+  }
+
+  Hook = &mHooks[mHookCount];
+  ZeroMem (Hook, sizeof (*Hook));
+  Hook->InUse              = TRUE;
+  Hook->Logical            = Media->LogicalPartition;
+  Hook->Usb                = Usb;
+  Hook->Index              = mHookCount;
+  Hook->Handle             = Handle;
+  Hook->BlockIo            = BlockIo;
+  Hook->OriginalReadBlocks = BlockIo->ReadBlocks;
+  mHookCount++;
+
+  if (Hook->Logical) {
+    mLogicalHookCount++;
+  }
+
+  BlockIo->ReadBlocks = TracedReadBlocks;
+
+  BlkTracePrint (
+    "BLKRD-HOOK: slot=%u usb=%u removable=%u logical=%u bs=%u blocks=%lu\n",
+    (UINT32)Hook->Index,
+    (UINT32)(Hook->Usb ? 1 : 0),
+    (UINT32)(Media->RemovableMedia ? 1 : 0),
+    (UINT32)(Hook->Logical ? 1 : 0),
+    Media->BlockSize,
+    (UINT64)Media->LastBlock + 1
+    );
+}
+
+STATIC
+VOID
+ScanUsbOrRemovableBlockIo (
+  VOID
+  )
+{
+  EFI_STATUS             Status;
+  EFI_HANDLE             *Handles;
+  UINTN                  HandleCount;
+  UINTN                  Index;
+  EFI_BLOCK_IO_PROTOCOL  *BlockIo;
+
+  Handles     = NULL;
+  HandleCount = 0;
+
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiBlockIoProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (EFI_ERROR (Status) || (Handles == NULL)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    BlockIo = NULL;
+    Status  = gBS->HandleProtocol (
+                     Handles[Index],
+                     &gEfiBlockIoProtocolGuid,
+                     (VOID **)&BlockIo
+                     );
+    if (!EFI_ERROR (Status) && (BlockIo != NULL)) {
+      HookBlockIo (Handles[Index], BlockIo);
+    }
+  }
+
+  FreePool (Handles);
+}
+
+STATIC
+VOID
+EFIAPI
+ScanTimerNotify (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  ScanUsbOrRemovableBlockIo ();
+}
+
+/*
+  Counting policy: logical partition instances are authoritative.  Raw
+  removable-media instances are counted only until/unless a logical
+  partition hook exists.  This avoids double-counting the usual stack where
+  a partition child read is internally forwarded to its raw parent.
+*/
+STATIC
+EFI_STATUS
+EFIAPI
+TracedReadBlocks (
+  IN EFI_BLOCK_IO_PROTOCOL  *This,
+  IN UINT32                 MediaId,
+  IN EFI_LBA                Lba,
+  IN UINTN                  BufferSize,
+  OUT VOID                  *Buffer
+  )
+{
+  BLKTRACE_HOOK  *Hook;
+  EFI_STATUS     Status;
+  BOOLEAN        CountAsPrimary;
+
+  Hook = FindHook (This);
+  if ((Hook == NULL) || (Hook->OriginalReadBlocks == NULL)) {
+    return EFI_DEVICE_ERROR;
+  }
+
+  Status = Hook->OriginalReadBlocks (This, MediaId, Lba, BufferSize, Buffer);
+  if (EFI_ERROR (Status)) {
+    if (Hook->ErrorPrints < BLKTRACE_MAX_ERRLOGS) {
+      Hook->ErrorPrints++;
+      BlkTracePrint (
+        "BLKRD-ERR: slot=%u st=0x%lx lba=%lu bytes=%lu\n",
+        (UINT32)Hook->Index,
+        (UINT64)Status,
+        (UINT64)Lba,
+        (UINT64)BufferSize
+        );
+    }
+    return Status;
+  }
+
+  Hook->TotalBytes += (UINT64)BufferSize;
+  Hook->TotalReads++;
+
+  CountAsPrimary = Hook->Logical || (mLogicalHookCount == 0);
+  if (!CountAsPrimary) {
+    return Status;
+  }
+
+  if (!mStartPrinted) {
+    mStartPrinted = TRUE;
+    BlkTracePrint (
+      "BLKRD-START: slot=%u lba=%lu bytes=%lu\n",
+      (UINT32)Hook->Index,
+      (UINT64)Lba,
+      (UINT64)BufferSize
+      );
+  }
+
+  mPrimaryBytes += (UINT64)BufferSize;
+  mPrimaryReads++;
+
+  while (mPrimaryBytes >= mNextReportBytes) {
+    BlkTracePrint ("BLKRD: %lu MiB\n", mNextReportBytes / BLKTRACE_MIB);
+    mNextReportBytes += BLKTRACE_REPORT_MIB * BLKTRACE_MIB;
+  }
+
+  return Status;
+}
+
+STATIC
+VOID
+EFIAPI
+ExitBootServicesNotify (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  if (mEndPrinted) {
+    return;
+  }
+  mEndPrinted = TRUE;
+
+  if (mScanTimerEvent != NULL) {
+    gBS->SetTimer (mScanTimerEvent, TimerCancel, 0);
+  }
+
+  BlkTracePrint (
+    "BLKRD-END: total=%lu bytes (%lu MiB) reads=%lu hooks=%u logical=%u notify=%u\n",
+    mPrimaryBytes,
+    mPrimaryBytes / BLKTRACE_MIB,
+    mPrimaryReads,
+    (UINT32)mHookCount,
+    (UINT32)mLogicalHookCount,
+    (UINT32)(mProtocolNotifyRegistered ? 1 : 0)
+    );
+}
+
+EFI_STATUS
+EFIAPI
+BlkTraceDxeEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_STATUS  Status;
+  VOID        *Registration;
+
+  mSerialReady = !RETURN_ERROR (SerialPortInitialize ());
+
+  BlkTracePrint ("BLKRD-INIT\n");
+  ScanUsbOrRemovableBlockIo ();
+
+  Registration = NULL;
+  Status       = gBS->CreateEvent (
+                        EVT_NOTIFY_SIGNAL,
+                        TPL_NOTIFY,
+                        ScanTimerNotify,
+                        NULL,
+                        &mProtocolNotifyEvent
+                        );
+  if (!EFI_ERROR (Status)) {
+    Status = gBS->RegisterProtocolNotify (
+                    &gEfiBlockIoProtocolGuid,
+                    mProtocolNotifyEvent,
+                    &Registration
+                    );
+    if (!EFI_ERROR (Status)) {
+      mProtocolNotifyRegistered = TRUE;
+    } else {
+      gBS->CloseEvent (mProtocolNotifyEvent);
+      mProtocolNotifyEvent = NULL;
+    }
+  }
+  if (EFI_ERROR (Status)) {
+    BlkTracePrint ("BLKRD-WARN: protocol notify unavailable st=0x%lx\n", (UINT64)Status);
+  }
+
+  Status = gBS->CreateEvent (
+                  EVT_TIMER | EVT_NOTIFY_SIGNAL,
+                  TPL_NOTIFY,
+                  ScanTimerNotify,
+                  NULL,
+                  &mScanTimerEvent
+                  );
+  if (!EFI_ERROR (Status)) {
+    Status = gBS->SetTimer (
+                    mScanTimerEvent,
+                    TimerPeriodic,
+                    EFI_TIMER_PERIOD_MILLISECONDS (BLKTRACE_SCAN_MS)
+                    );
+    if (EFI_ERROR (Status)) {
+      gBS->CloseEvent (mScanTimerEvent);
+      mScanTimerEvent = NULL;
+    }
+  }
+  if (EFI_ERROR (Status)) {
+    BlkTracePrint ("BLKRD-WARN: scan timer unavailable st=0x%lx\n", (UINT64)Status);
+  }
+
+  Status = gBS->CreateEventEx (
+                  EVT_NOTIFY_SIGNAL,
+                  TPL_NOTIFY,
+                  ExitBootServicesNotify,
+                  NULL,
+                  &gEfiEventExitBootServicesGuid,
+                  &mExitBootServicesEvent
+                  );
+  if (EFI_ERROR (Status)) {
+    BlkTracePrint ("BLKRD-WARN: exit event unavailable st=0x%lx\n", (UINT64)Status);
+    mExitBootServicesEvent = NULL;
+  }
+
+  return EFI_SUCCESS;
+}

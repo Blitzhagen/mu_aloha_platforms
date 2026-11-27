@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-DALSYSDxe v174 patch: populate /dev/i2c11 in-place and recycle the
+DALSYSDxe v175 patch: populate /dev/i2c11 in-place and recycle the
 experimental /dev/i2c4 slot as /dev/SPI7, exactly following
-woa-t736b/re/dalsys-format-report.md section 5.3.
+woa-t736b/re/dalsys-format-report.md section 5.3.  The v175 revision also
+corrects the i2c11 mode/flag bytes and extends the final PE relocation
+block with DIR64 entries for the three image-internal clock pointers;
+see woa-t736b/re/pogokb-crash-analysis.md.
 
 The patch is size-neutral.  It must preserve the four v171 USB-host-fix
 bytes in DALSYSDxe.efi:
@@ -29,8 +32,19 @@ V171_BYTES = {
     0x1BA67: 0x89,
 }
 
+I2C11_CFG_FILE_OFFSET = 0x466F8
+FINAL_RELOC_BLOCK_FILE_OFFSET = 0x4C0E0
+FINAL_RELOC_PAGE_RVA = 0x46000
+FINAL_RELOC_BLOCK_SIZE = 0x1C
+FINAL_RELOC_ENTRIES = (
+    0xAF80, 0xAF88, 0xAF90,  # SPI7 cfg tail pointers 0x46f80/88/90
+    0xAFB0, 0xAFB8, 0xAFC0,  # pre-existing SPI7/i2c4-slot pointers
+    0xA730, 0xA738, 0xA740,  # i2c11 clock pointers 0x46730/38/40
+    0x0000,                  # type-0 alignment pad
+)
+
 I2C11_CFG = bytes.fromhex(
-    "000090000000000000009c000000000000000900010b04000001000000000a0051800100418001000000fc0100000000000000000000000090b802000000000018b902000000000038b9020000000000"
+    "000090000000000000009c000000000000000900010b04000000010000000a0051800100418001000000fc0100000000000000000000000090b802000000000018b902000000000038b9020000000000"
 )
 SPI7_CFG = bytes.fromhex(
     "000090000000000000009c000000000000000800010700000001000000000600"
@@ -49,9 +63,11 @@ PATCHES = [
     (0x1CBE0, bytes.fromhex("2f6465762f5350493700"), "rename /dev/i2c4 -> /dev/SPI7"),
     (0x1C740, bytes.fromhex("25852814"), "DJB2 hash /dev/SPI7 = 0x14288525"),
     (0x1CBCC, bytes.fromhex("42000000"), "stream payload struct index 66"),
+    (0x4C0E4, bytes.fromhex("1c000000"), "final relocation block size 0x1c (nine DIR64 entries + pad)"),
     (0x4C0E8, bytes.fromhex("80af"), "reloc config+0x58 -> 0x46f80"),
     (0x4C0EA, bytes.fromhex("88af"), "reloc config+0x60 -> 0x46f88"),
     (0x4C0EC, bytes.fromhex("90af"), "reloc config+0x68 -> 0x46f90"),
+    (0x4C0F4, bytes.fromhex("30a738a740a70000"), "reloc i2c11 clock pointers 0x46730/0x46738/0x46740 + align pad"),
 ]
 
 
@@ -82,6 +98,40 @@ def verify(data: bytearray) -> list[str]:
         end = off + len(patch)
         if data[off:end] != patch:
             raise SystemExit(f"ERROR: patch verification failed at 0x{off:x} ({desc})")
+
+    # The stock i2c3/i2c8 configs use mode/enable flags 00 00 01 00 at
+    # cfg+0x18..+0x1b.  v174 mistakenly carried the one at +0x19; I2CDxe
+    # reads +0x1a.  Verify the exact v175 pattern.
+    flag_bytes = bytes(data[I2C11_CFG_FILE_OFFSET + 0x18:I2C11_CFG_FILE_OFFSET + 0x1C])
+    if flag_bytes != b"\x00\x00\x01\x00":
+        raise SystemExit(f"ERROR: /dev/i2c11 cfg+0x18..+0x1b mismatch: {flag_bytes.hex()}, want 00000100")
+
+    # Parse, rather than merely byte-compare, the final PE base-relocation
+    # block.  It covers the 0x46000 page and must contain nine DIR64 entries
+    # plus one type-0 alignment pad.  In particular the three entries for
+    # 0x46730/0x46738/0x46740 make the i2c11 clock pointers runtime-relocated;
+    # without them i2c_open dereferences raw RVAs such as 0x2b890 and faults.
+    page_rva, block_size = struct.unpack_from("<II", data, FINAL_RELOC_BLOCK_FILE_OFFSET)
+    if page_rva != FINAL_RELOC_PAGE_RVA or block_size != FINAL_RELOC_BLOCK_SIZE:
+        raise SystemExit(
+            f"ERROR: final relocation block header mismatch: page=0x{page_rva:x} size=0x{block_size:x}, "
+            f"want page=0x{FINAL_RELOC_PAGE_RVA:x} size=0x{FINAL_RELOC_BLOCK_SIZE:x}"
+        )
+    entries = struct.unpack_from("<10H", data, FINAL_RELOC_BLOCK_FILE_OFFSET + 8)
+    if entries != FINAL_RELOC_ENTRIES:
+        got = " ".join(f"{e:04x}" for e in entries)
+        want = " ".join(f"{e:04x}" for e in FINAL_RELOC_ENTRIES)
+        raise SystemExit(f"ERROR: final relocation entries mismatch: {got}, want {want}")
+    relocated = []
+    for entry in entries[:9]:
+        reloc_type = entry >> 12
+        target = FINAL_RELOC_PAGE_RVA + (entry & 0x0FFF)
+        if reloc_type != 10:
+            raise SystemExit(f"ERROR: relocation target 0x{target:x} has type {reloc_type}, want DIR64 type 10")
+        relocated.append(target)
+    for target in (0x46730, 0x46738, 0x46740):
+        if target not in relocated:
+            raise SystemExit(f"ERROR: missing DIR64 relocation for i2c11 clock pointer at 0x{target:x}")
 
     # Format-level verification from dalsys-format-report.md section 8.
     blob, struct_tbl, numdevs, dev_tbl = struct.unpack_from("<QQQQ", data, 0x7FB0)
@@ -141,7 +191,8 @@ def verify(data: bytearray) -> list[str]:
     messages.append(f"/dev/i2c11: device[{i2c_idx}] stream=blob+0x{i2c_stream:x} struct=6 cfg=0x466f8 phys=0x990000")
     messages.append(f"/dev/SPI7:  device[{spi_idx}] stream=blob+0x{spi_stream:x} struct=66 cfg=0x46f28 phys=0x980000")
     messages.append("v171 USB-fix bytes preserved")
-    messages.append("relocs 0x4c0e8..0x4c0ec = 80 af 88 af 90 af")
+    messages.append("i2c11 cfg+0x18..+0x1b = 00 00 01 00")
+    messages.append("final reloc block page=0x46000 size=0x1c entries include DIR64 0x46730/0x46738/0x46740")
     return messages
 
 

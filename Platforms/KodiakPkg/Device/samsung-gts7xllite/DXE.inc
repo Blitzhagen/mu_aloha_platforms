@@ -105,6 +105,11 @@
             SECTION UI = "UsbMassStorageDxe"
     }
 
+    # Normal DXE component (not APRIORI): starts after the APRIORI USB mass
+    # storage driver and uses its periodic scan to catch later ConnectController
+    # enumeration/partition-child creation.
+    INF KodiakPkg/Device/$(TARGET_DEVICE)/Drivers/BlkTraceDxe/BlkTraceDxe.inf
+
     FILE DRIVER = B0D3689E-11F8-43C6-8ECE-023A29CEC35B {
             SECTION PE32 = KodiakPkg/Device/$(TARGET_DEVICE)/Binaries/QcomPkg/Drivers/RNGDxe/RngDxe.efi
             SECTION UI = "RngDxe"
