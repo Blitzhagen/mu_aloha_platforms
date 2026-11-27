@@ -13,6 +13,7 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
+#include <Library/TimerLib.h>
 
 #define QCOM_I2C_PROTOCOL_GUID \
   {0xb27ae8b1, 0x3e10, 0x4d07, {0xab, 0x5c, 0xeb, 0x9a, 0x6d, 0xc6, 0xfa, 0x8f}}
@@ -75,10 +76,12 @@ typedef struct {
   I2C_CLOSE     Close;
 } QCOM_I2C_PROTOCOL;
 
-#define POGO_I2C_INSTANCE  11
-#define POGO_SLAVE_PRIMARY 0x2a
-#define POGO_SLAVE_ALT     0x56
-#define POGO_TIMEOUT_US    2500
+#define POGO_I2C_INSTANCE       11
+#define POGO_SLAVE_PRIMARY      0x2a
+#define POGO_SLAVE_ALT          0x56
+#define POGO_TIMEOUT_US         2500
+#define POGO_POLL_INTERVAL_NS   5000000ULL
+#define POGO_POLL_BURST_MAX     4
 
 #define ID_KEYPAD  3
 #define ID_HALL    4
@@ -90,7 +93,6 @@ typedef struct {
 typedef struct {
   EFI_SIMPLE_TEXT_INPUT_PROTOCOL    SimpleIn;
   EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL SimpleEx;
-  EFI_EVENT                         TimerEvent;
   EFI_EVENT                         WaitEvent;
   EFI_HANDLE                        Handle;
   VOID                              *I2cHandle;
@@ -100,6 +102,8 @@ typedef struct {
   UINTN                             Head;
   UINTN                             Tail;
   EFI_KEY_TOGGLE_STATE              Toggle;
+  UINT64                            LastPollNs;
+  BOOLEAN                           LastPollValid;
   BOOLEAN                           ProbeOk;
 } POGO_KB;
 
@@ -259,15 +263,21 @@ ReleaseAllKeys (
   ZeroMem (K->Pressed, sizeof (K->Pressed));
 }
 
+/*
+  Poll one STM32 event frame synchronously.
+
+  This function must only run from the SimpleTextIn(Ex) read path.  In
+  particular it must never be called from a timer/event notification running
+  at TPL_NOTIFY: the Qualcomm I2C implementation uses locks/events internally
+  that are not safe at that TPL.  Return TRUE when a complete frame was
+  consumed, FALSE for no frame, noise, an invalid frame, or an I2C error.
+*/
 STATIC
-VOID
-EFIAPI
-PollPogo (
-  IN EFI_EVENT  Event,
-  IN VOID       *Context
+BOOLEAN
+PollPogoOnce (
+  IN POGO_KB *K
   )
 {
-  POGO_KB *K = (POGO_KB *)Context;
   UINT8   Request[3];
   UINT8   Header[3] = {0, 0, 0};
   UINT8   Payload[100];
@@ -275,7 +285,7 @@ PollPogo (
   UINTN   PayloadLength;
 
   if ((K == NULL) || (mI2c == NULL) || (K->I2cHandle == NULL)) {
-    return;
+    return FALSE;
   }
 
   /* caps value: 1 initially, 2 when caps-lock is active. */
@@ -284,32 +294,71 @@ PollPogo (
   Request[2] = ((K->Toggle & EFI_CAPS_LOCK_ACTIVE) != 0) ? 2 : 1;
 
   if (RawWrite (K, Request, sizeof (Request)) != I2C_STATUS_SUCCESS) {
-    return;
+    return FALSE;
   }
   if (RawRead (K, Header, sizeof (Header)) != I2C_STATUS_SUCCESS) {
-    return;
+    return FALSE;
   }
 
   TotalLength = (UINT16)(Header[0] | (Header[1] << 8));
   if ((TotalLength < 3) || (TotalLength > 103)) {
-    return;
+    return FALSE;
   }
   PayloadLength = TotalLength - 3;
   if (PayloadLength > sizeof (Payload)) {
-    return;
+    return FALSE;
   }
   if ((PayloadLength != 0) &&
       (RawRead (K, Payload, (UINT16)PayloadLength) != I2C_STATUS_SUCCESS)) {
-    return;
+    return FALSE;
   }
 
-  if ((TotalLength == 3) && (Header[2] == 5)) {
-    return;  /* documented noise frame */
+  if (((TotalLength == 3) && (Header[2] == 5)) ||
+      ((PayloadLength >= 3) && (Payload[0] == 3) && (Payload[1] == 0) && (Payload[2] == 5))) {
+    return FALSE;  /* documented noise frame (header form and Linux payload form) */
   }
   if (Header[2] == ID_KEYPAD) {
     DecodeKeypadPayload (K, Payload, PayloadLength);
   } else if ((Header[2] == ID_HALL) && (PayloadLength != 0)) {
     ReleaseAllKeys (K);
+  }
+
+  /* Unknown but well-formed endpoint frames are consumed too, so they cannot
+     block later keypad frames behind them. */
+  return TRUE;
+}
+
+/*
+  Rate-limited poll-on-demand worker.  ReadKeyStroke(Ex) is called continually
+  by the console/menu stack, so no timer callback is required.  Keep the burst
+  short to bound the amount of synchronous I2C work in one read call.
+*/
+STATIC
+VOID
+PollPogoOnDemand (
+  IN POGO_KB *K
+  )
+{
+  UINT64  NowNs;
+  UINTN   Index;
+
+  if ((K == NULL) || (mI2c == NULL) || (K->I2cHandle == NULL)) {
+    return;
+  }
+
+  NowNs = GetTimeInNanoSecond (GetPerformanceCounter ());
+  if (K->LastPollValid &&
+      ((NowNs - K->LastPollNs) < POGO_POLL_INTERVAL_NS)) {
+    return;
+  }
+
+  K->LastPollNs    = NowNs;
+  K->LastPollValid = TRUE;
+
+  for (Index = 0; Index < POGO_POLL_BURST_MAX; Index++) {
+    if (!PollPogoOnce (K)) {
+      break;
+    }
   }
 }
 
@@ -338,14 +387,24 @@ PogoReadKeyEx (
 {
   POGO_KB *K = BASE_CR (This, POGO_KB, SimpleEx);
 
+  if (KeyData == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  /* Poll synchronously in the consumer's read context (TPL_APPLICATION or
+     TPL_CALLBACK).  No I2C transfer is allowed from the WaitForKey notify or
+     from any timer callback. */
+  PollPogoOnDemand (K);
+
   if (K->Head == K->Tail) {
-      return EFI_NOT_READY;
+    return EFI_NOT_READY;
   }
 
   CopyMem (KeyData, &K->Pending[K->Head], sizeof (EFI_KEY_DATA));
   K->Head = (K->Head + 1) % KEY_QUEUE_SIZE;
-  if (K->Head == K->Tail) {
-    }
+  if (K->Head != K->Tail) {
+    gBS->SignalEvent (K->WaitEvent);
+  }
   return EFI_SUCCESS;
 }
 
@@ -427,6 +486,14 @@ PogoWaitEventNotify (
   IN VOID       *Context
   )
 {
+  POGO_KB *K = (POGO_KB *)Context;
+
+  /* The notify runs at TPL_NOTIFY.  It deliberately performs no I2C work;
+     it only reflects keys that were already queued by the synchronous read
+     path. */
+  if ((K != NULL) && (K->Head != K->Tail)) {
+    gBS->SignalEvent (Event);
+  }
 }
 
 STATIC
@@ -437,10 +504,6 @@ CloseAndFree (
 {
   if (K == NULL) {
     return;
-  }
-  if (K->TimerEvent != NULL) {
-    gBS->SetTimer (K->TimerEvent, TimerCancel, 0);
-    gBS->CloseEvent (K->TimerEvent);
   }
   if (K->WaitEvent != NULL) {
     gBS->CloseEvent (K->WaitEvent);
@@ -504,21 +567,10 @@ PogoKbEntry (
     ));
 
   Status = gBS->CreateEvent (
-                  EVT_TIMER | EVT_NOTIFY_SIGNAL,
-                  TPL_NOTIFY,
-                  PollPogo,
-                  K,
-                  &K->TimerEvent
-                  );
-  if (EFI_ERROR (Status)) {
-    goto Fail;
-  }
-
-  Status = gBS->CreateEvent (
                   EVT_NOTIFY_WAIT,
                   TPL_NOTIFY,
                   PogoWaitEventNotify,
-                  NULL,
+                  K,
                   &K->WaitEvent
                   );
   if (EFI_ERROR (Status)) {
@@ -548,16 +600,7 @@ PogoKbEntry (
     goto Fail;
   }
 
-  Status = gBS->SetTimer (
-                  K->TimerEvent,
-                  TimerPeriodic,
-                  EFI_TIMER_PERIOD_MILLISECONDS (10)
-                  );
-  if (EFI_ERROR (Status)) {
-    goto Fail;
-  }
-
-  DEBUG ((DEBUG_INFO, "PogoKbDxe: installed SimpleTextIn/Ex on i2c11\n"));
+  DEBUG ((DEBUG_INFO, "PogoKbDxe: installed SimpleTextIn/Ex on i2c11 (poll-on-demand)\n"));
   return EFI_SUCCESS;
 
 Fail:

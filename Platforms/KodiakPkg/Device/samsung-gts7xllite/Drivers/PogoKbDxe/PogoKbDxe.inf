@@ -19,6 +19,7 @@
   MemoryAllocationLib
   BaseMemoryLib
   DebugLib
+  TimerLib
   UefiLib
 
 [Protocols]

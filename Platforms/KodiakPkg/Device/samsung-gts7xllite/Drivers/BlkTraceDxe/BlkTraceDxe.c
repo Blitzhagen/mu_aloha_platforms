@@ -27,6 +27,7 @@
 #define BLKTRACE_REPORT_MIB   64
 #define BLKTRACE_MIB          0x100000ULL
 #define BLKTRACE_SCAN_MS      50
+#define BLKTRACE_SCAN_TPL     TPL_CALLBACK
 #define BLKTRACE_MAX_ERRLOGS  4
 
 typedef struct {
@@ -252,6 +253,12 @@ ScanUsbOrRemovableBlockIo (
   FreePool (Handles);
 }
 
+/*
+  Scanning uses LocateHandleBuffer/HandleProtocol and therefore must not run
+  in a TPL_NOTIFY timer callback.  Both the periodic scan event and the
+  BlockIo protocol-notify event are created with BLKTRACE_SCAN_TPL (callback
+  level), where these boot-service calls are legal.
+*/
 STATIC
 VOID
 EFIAPI
@@ -379,7 +386,7 @@ BlkTraceDxeEntry (
   Registration = NULL;
   Status       = gBS->CreateEvent (
                         EVT_NOTIFY_SIGNAL,
-                        TPL_NOTIFY,
+                        BLKTRACE_SCAN_TPL,
                         ScanTimerNotify,
                         NULL,
                         &mProtocolNotifyEvent
@@ -403,7 +410,7 @@ BlkTraceDxeEntry (
 
   Status = gBS->CreateEvent (
                   EVT_TIMER | EVT_NOTIFY_SIGNAL,
-                  TPL_NOTIFY,
+                  BLKTRACE_SCAN_TPL,
                   ScanTimerNotify,
                   NULL,
                   &mScanTimerEvent
