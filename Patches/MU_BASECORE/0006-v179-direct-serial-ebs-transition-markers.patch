@@ -1,0 +1,113 @@
+From e37b9a8ebbb258ee0e5907ae170bd21e0120266a Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Fri, 27 Nov 2026 18:11:31 +0100
+Subject: [PATCH] v179: direct-serial EBS transition markers
+
+The existing EBS-TRACE diagnostics used EFI_D_INFO and were filtered by the platform debug print level. Emit the three CoreExitBootServices phase breadcrumbs directly through SerialPortWrite instead so they reach the framebuffer/pstore backends independently of DEBUG print filtering. No boot-flow or memory-map behaviour change.
+---
+ MdeModulePkg/Core/Dxe/DxeMain.inf       |  2 ++
+ MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c | 47 +++++++++++++++++++++++--
+ 2 files changed, 46 insertions(+), 3 deletions(-)
+
+diff --git a/MdeModulePkg/Core/Dxe/DxeMain.inf b/MdeModulePkg/Core/Dxe/DxeMain.inf
+index 0831898de2..bb74fe7d95 100644
+--- a/MdeModulePkg/Core/Dxe/DxeMain.inf
++++ b/MdeModulePkg/Core/Dxe/DxeMain.inf
+@@ -100,6 +100,8 @@
+   OrderedCollectionLib
+   DxeMemoryProtectionHobLib ## MU_CHANGE
+   SafeIntLib                ## MU_CHANGE
++  PrintLib                  ## MU_CHANGE: v179 direct EBS serial tracing
++  SerialPortLib             ## MU_CHANGE: v179 direct EBS serial tracing
+ 
+ [Guids]
+   gEfiEventMemoryMapChangeGuid                  ## PRODUCES             ## Event
+diff --git a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+index 74aa317a6f..df30e10bc3 100644
+--- a/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
++++ b/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c
+@@ -8,6 +8,9 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ 
+ #include "DxeMain.h"
+ 
++#include <Library/PrintLib.h>
++#include <Library/SerialPortLib.h>
++
+ //
+ // DXE Core Global Variables for Protocols from PEI
+ //
+@@ -778,6 +781,44 @@ CalculateEfiHdrCrc (
+   Hdr->CRC32 = Crc;
+ }
+ 
++/*
++  v179 diagnostic: the regular DEBUG() EBS markers below were invisible because
++  they used EFI_D_INFO while PcdDebugPrintErrorLevel filters INFO out.  Emit the
++  few ExitBootServices phase markers directly through SerialPortWrite so they
++  reach the framebuffer/pstore backends independently of the debug print level.
++*/
++STATIC BOOLEAN  mEbsTraceSerialInitTried;
++STATIC BOOLEAN  mEbsTraceSerialReady;
++
++STATIC
++VOID
++EbsTracePrint (
++  IN CONST CHAR8  *Format,
++  ...
++  )
++{
++  CHAR8   Buffer[192];
++  VA_LIST Marker;
++  UINTN   Length;
++
++  if (!mEbsTraceSerialInitTried) {
++    mEbsTraceSerialInitTried = TRUE;
++    mEbsTraceSerialReady     = !RETURN_ERROR (SerialPortInitialize ());
++  }
++
++  if (!mEbsTraceSerialReady) {
++    return;
++  }
++
++  VA_START (Marker, Format);
++  Length = AsciiVSPrint (Buffer, sizeof (Buffer), Format, Marker);
++  VA_END (Marker);
++
++  if (Length != 0) {
++    SerialPortWrite ((UINT8 *)Buffer, Length);
++  }
++}
++
+ /**
+   Terminates all boot services.
+ 
+@@ -797,7 +838,7 @@ CoreExitBootServices (
+ {
+   EFI_STATUS  Status;
+ 
+-  DEBUG ((EFI_D_INFO, "EBS-TRACE: ExitBootServices entered, MapKey=%lx\n", (UINT64)MapKey));
++  EbsTracePrint ("EBS-TRACE: ExitBootServices entered, MapKey=%lx\n", (UINT64)MapKey);
+ 
+   //
+   // Notify other drivers of their last chance to use boot services
+@@ -818,7 +859,7 @@ CoreExitBootServices (
+   //
+   Status = CoreTerminateMemoryMap (MapKey);
+   if (EFI_ERROR (Status)) {
+-    DEBUG ((EFI_D_INFO, "EBS-TRACE: TerminateMemoryMap failed %r, retry expected\n", Status));
++    EbsTracePrint ("EBS-TRACE: TerminateMemoryMap failed st=%lx, retry expected\n", (UINT64)Status);
+     //
+     // Notify other drivers that ExitBootServices fail
+     //
+@@ -843,7 +884,7 @@ CoreExitBootServices (
+ 
+   MemoryProtectionExitBootServicesCallback ();
+ 
+-  DEBUG ((EFI_D_INFO, "EBS-TRACE: map terminated, leaving firmware\n"));
++  EbsTracePrint ("EBS-TRACE: map terminated, leaving firmware\n");
+ 
+   //
+   // Disable interrupt of Debug timer.
+-- 
+2.53.0
+

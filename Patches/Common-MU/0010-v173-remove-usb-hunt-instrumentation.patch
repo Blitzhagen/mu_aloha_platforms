@@ -1,0 +1,425 @@
+From 130a693ab905613a1be587bc78c6c29de06840ab Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Thu, 26 Nov 2026 18:43:00 +0100
+Subject: [PATCH] MsBootPolicy: remove USB-hunt instrumentation (319 lines)
+
+---
+ PcBdsPkg/MsBootPolicy/MsBootPolicy.c | 319 ---------------------------
+ 1 file changed, 319 deletions(-)
+
+diff --git a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+index 805168ca..3c52ef68 100644
+--- a/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
++++ b/PcBdsPkg/MsBootPolicy/MsBootPolicy.c
+@@ -7,10 +7,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ 
+ #include "MsBootPolicy.h"
+ #include <Library/MemoryMapHelperLib.h>
+-#include <Pi/PiDxeCis.h>
+-#include <Library/DxeServicesTableLib.h>
+ #include <Library/CacheMaintenanceLib.h>
+-#include <Library/TimerLib.h>
+ 
+ #define USB_DRIVE_SECOND_CHANCE_DELAY_S  6
+ 
+@@ -194,92 +191,6 @@ DumpMuLogRawBlocks (
+ // v149: kompletten PStore-Serialring auf das erste beschreibbare
+ // FAT-Volume dumpen (Stick-ESP oder UFS-Partition) - macht Logs ohne
+ // Screen/ramoops lesbar.
+-// v154: EFI-Memory-Map + GCD-Space-Map ins Log - zeigt welche Ranges
+-// Windows bekommt und warum ConvertPages auf 0x10000000/0x102000 scheitert.
+-static CONST CHAR8 * const mMemTypeNames[] = {
+-  "Reserved","LoaderCode","LoaderData","BS_Code","BS_Data",
+-  "RT_Code","RT_Data","Conv","Unusable","ACPIRcl","ACPI_NVS",
+-  "MMIO","MMIOPort","PalCode","Persistent"
+-};
+-
+-VOID
+-DumpEfiMemoryMap (
+-  VOID
+-  )
+-{
+-  EFI_MEMORY_DESCRIPTOR  *Map, *E;
+-  UINTN                  MapSize, DescSize, Key;
+-  UINT32                 DescVer;
+-  UINT64                 Addr;
+-  EFI_STATUS             St;
+-
+-  MapSize = 0;
+-  St = gBS->GetMemoryMap (&MapSize, NULL, &Key, &DescSize, &DescVer);
+-  if (St != EFI_BUFFER_TOO_SMALL) {
+-    DEBUG ((DEBUG_ERROR, "MMAP: GetMemoryMap size -> %r\n", St));
+-    return;
+-  }
+-  Map = AllocatePool (MapSize + 4 * DescSize);
+-  if (Map == NULL) {
+-    return;
+-  }
+-  MapSize += 4 * DescSize;
+-  St = gBS->GetMemoryMap (&MapSize, Map, &Key, &DescSize, &DescVer);
+-  if (EFI_ERROR (St)) {
+-    DEBUG ((DEBUG_ERROR, "MMAP: GetMemoryMap -> %r\n", St));
+-    FreePool (Map);
+-    return;
+-  }
+-  DEBUG ((DEBUG_ERROR, "MMAP: %d entries\n", (UINT32)(MapSize / DescSize)));
+-  E = Map;
+-  while ((UINTN)E < (UINTN)Map + MapSize) {
+-    Addr = E->PhysicalStart;
+-    DEBUG ((
+-      DEBUG_ERROR,
+-      "MMAP: %a %lx pgs %lx attr %lx\n",
+-      (E->Type < 15 ? mMemTypeNames[E->Type] : "?"),
+-      (UINT64)Addr,
+-      (UINT64)E->NumberOfPages,
+-      (UINT64)E->Attribute
+-      ));
+-    E = NEXT_MEMORY_DESCRIPTOR (E, DescSize);
+-  }
+-  FreePool (Map);
+-}
+-
+-VOID
+-DumpGcdMap (
+-  VOID
+-  )
+-{
+-  EFI_GCD_MEMORY_SPACE_DESCRIPTOR  *Map;
+-  UINTN                            C, I;
+-  EFI_STATUS                       St;
+-
+-  C   = 0;
+-  Map = NULL;
+-  St  = gDS->GetMemorySpaceMap (&C, &Map);
+-  if (EFI_ERROR (St)) {
+-    DEBUG ((DEBUG_ERROR, "GCD: map -> %r\n", St));
+-    return;
+-  }
+-  DEBUG ((DEBUG_ERROR, "GCD: %d entries\n", (UINT32)C));
+-  for (I = 0; I < C; I++) {
+-    DEBUG ((
+-      DEBUG_ERROR,
+-      "GCD: %lx len %lx cap %lx attr %lx t %d\n",
+-      (UINT64)Map[I].BaseAddress,
+-      (UINT64)Map[I].Length,
+-      (UINT64)Map[I].Capabilities,
+-      (UINT64)Map[I].Attributes,
+-      (UINT32)Map[I].GcdMemoryType
+-      ));
+-  }
+-  if (Map != NULL) {
+-    FreePool (Map);
+-  }
+-}
+-
+ // v154: stale MemoryTypeInformation-Variable loeschen (alt: 0x30B,
+ // erwartet: 0x50B) - wird beim naechsten Save korrekt neu geschrieben.
+ VOID
+@@ -295,153 +206,6 @@ ResetMemoryTypeInfoVar (
+   DEBUG ((DEBUG_ERROR, "MTI-VAR: delete -> %r\n", St));
+ }
+ 
+-// v161: xHC PORTSC-Watch — wann stirbt der USB-Link (RxDetect)?
+-// Phys-Basis 0x0A600000 = PlatformMemoryMapLib "USB"-Eintrag (DWC3/xHC).
+-// CAPLENGTH-Byte @+0x00 -> opreg base; PORTSCn @opreg+0x400+0x10*n.
+-#define XWATCH_XHC_PHYS  0x0A600000ULL
+-
+-STATIC UINT32
+-XWatchPort (
+-  UINTN  Port
+-  )
+-{
+-  volatile UINT8  *Base = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
+-  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
+-}
+-
+-STATIC VOID
+-XWatch (
+-  CONST CHAR8  *Tag
+-  )
+-{
+-  DEBUG ((DEBUG_ERROR, "XWATCH %a: psc0=%x psc1=%x\n", Tag, XWatchPort (0), XWatchPort (1)));
+-}
+-
+-// v169: dwc3-SUSPHY/LPM-Bits erneut pruefen+loeschen - erkennt ob QC-Code
+-// sie nach DxeMain wieder gesetzt hat (re-arm).
+-STATIC VOID
+-Dwc3Fix (
+-  CONST CHAR8  *Tag
+-  )
+-{
+-  volatile UINT8   *DwcBase = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
+-  volatile UINT32  *PipeCtl = (volatile UINT32 *)(DwcBase + 0xC2C0);
+-  volatile UINT32  *PhyCfg  = (volatile UINT32 *)(DwcBase + 0xC200);
+-  UINT32           P0       = *PipeCtl;
+-  UINT32           G0       = *PhyCfg;
+-  *PipeCtl = P0 & ~((UINT32)(1u << 17) | (1u << 27));
+-  *PhyCfg  = G0 & ~((UINT32)(1u << 6) | (1u << 8));
+-  DEBUG ((DEBUG_ERROR, "DWC3FIX-%a pipe %x->%x gusb2 %x->%x\n", Tag, P0, *PipeCtl, G0, *PhyCfg));
+-}
+-
+-// v157: BlockIo-Read-Stress - prueft ob lange sequentielle Reads
+-// (Ramdisk-Aufbau ~630MB) den Mu-USB-Stack haengen. Liest jeden
+-// Removable-Handle (Disk + Partitionen) bis zu STRESS_MAX_BYTES
+-// sequentiell in 4MB-Chunks, loggt Zeit/Durchsatz je 16MB.
+-// Haengt der Stack, zeigt das PStore-Fenster die letzte gute LBA.
+-#define STRESS_CHUNK_BYTES  (4 * 1024 * 1024)
+-#define STRESS_LOG_EVERY    (16 * 1024 * 1024)
+-#define STRESS_MAX_BYTES    ((UINT64)64 * 1024 * 1024)
+-#define STRESS_MAX_ERRS     4
+-
+-VOID
+-StressUsbBlockRead (
+-  VOID
+-  )
+-{
+-  EFI_HANDLE              *H;
+-  UINTN                   C, I;
+-  EFI_STATUS              St;
+-  EFI_BLOCK_IO_PROTOCOL   *Bio;
+-  UINTN                   Blk;
+-  UINT64                  MediaBytes, TotalBytes, Done, T0, Dt;
+-  UINT8                   *Buf;
+-  UINTN                   Errs;
+-
+-  St = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &C, &H);
+-  if (EFI_ERROR (St) || (C == 0)) {
+-    DEBUG ((DEBUG_ERROR, "STRESS: no BlockIo handles (%r)\n", St));
+-    return;
+-  }
+-
+-  DEBUG ((DEBUG_ERROR, "STRESS: %d blockio handles\n", (UINT32)C));
+-  for (I = 0; I < C; I++) {
+-    St = gBS->HandleProtocol (H[I], &gEfiBlockIoProtocolGuid, (VOID **)&Bio);
+-    if (EFI_ERROR (St) || (Bio == NULL) || (Bio->Media == NULL)) {
+-      continue;
+-    }
+-    if (!Bio->Media->RemovableMedia) {
+-      continue;   // nur den Stick - UFS auslassen
+-    }
+-
+-    Blk = (UINTN)Bio->Media->BlockSize;
+-    if (Blk == 0) {
+-      continue;
+-    }
+-    MediaBytes = ((UINT64)Bio->Media->LastBlock + 1) * Blk;
+-    TotalBytes = MIN (MediaBytes, STRESS_MAX_BYTES);
+-    DEBUG ((
+-      DEBUG_ERROR,
+-      "STRESS h%d: blk %d media %ldMB ioalign %d lastblk %ld lp %d -> %ldMB zu lesen\n",
+-      (UINT32)I, (UINT32)Blk, MediaBytes / 1048576,
+-      (UINT32)Bio->Media->IoAlign, (UINT64)Bio->Media->LastBlock,
+-      (UINT32)Bio->Media->LogicalPartition, TotalBytes / 1048576
+-      ));
+-
+-    Buf = AllocatePages (EFI_SIZE_TO_PAGES (STRESS_CHUNK_BYTES));
+-    if (Buf == NULL) {
+-      DEBUG ((DEBUG_ERROR, "STRESS h%d: alloc %d failed\n", (UINT32)I, (UINT32)STRESS_CHUNK_BYTES));
+-      continue;
+-    }
+-
+-    Errs = 0;
+-    Done = 0;
+-    T0   = GetPerformanceCounter ();
+-    while (Done < TotalBytes) {
+-      UINTN     Want;
+-      EFI_LBA   Lba;
+-      UINT64    C0;
+-      UINTN     Ms;
+-
+-      Want = (UINTN)MIN ((UINT64)STRESS_CHUNK_BYTES, TotalBytes - Done);
+-      Lba  = Done / Blk;
+-      C0   = GetPerformanceCounter ();
+-      St   = Bio->ReadBlocks (Bio, Bio->Media->MediaId, Lba, Want, Buf);
+-      Dt   = GetPerformanceCounter () - C0;
+-      Ms   = (UINTN)(GetTimeInNanoSecond (Dt) / 1000000);
+-      if (EFI_ERROR (St)) {
+-        Errs++;
+-        DEBUG ((DEBUG_ERROR, "STRESS h%d: lba %ld %dB -> %r (errs %d)\n",
+-                (UINT32)I, (UINT64)Lba, (UINT32)Want, St, (UINT32)Errs));
+-        if (Errs >= STRESS_MAX_ERRS) {
+-          break;
+-        }
+-      } else if (((Done % STRESS_LOG_EVERY) == 0) || (Ms > 2000)) {
+-        DEBUG ((
+-          DEBUG_ERROR,
+-          "STRESS h%d: lba %ld %dB in %dms (%ld MB/s)\n",
+-          (UINT32)I, (UINT64)Lba, (UINT32)Want, (UINT32)Ms,
+-          Ms ? (UINT64)Want * 1000 / ((UINT64)Ms * 1048576) : 0
+-          ));
+-      }
+-
+-      Done += Want;
+-    }
+-
+-    Dt = GetPerformanceCounter () - T0;
+-    {
+-      UINTN  TotMs = (UINTN)(GetTimeInNanoSecond (Dt) / 1000000);
+-      DEBUG ((
+-        DEBUG_ERROR,
+-        "STRESS h%d END: %ldMB in %dms = %ld MB/s, errs %d\n",
+-        (UINT32)I, Done / 1048576, (UINT32)TotMs,
+-        TotMs ? Done * 1000 / ((UINT64)TotMs * 1048576) : 0, (UINT32)Errs
+-        ));
+-    }
+-    FreePages (Buf, EFI_SIZE_TO_PAGES (STRESS_CHUNK_BYTES));
+-  }
+-  DEBUG ((DEBUG_ERROR, "STRESS: all removable handles done\n"));
+-}
+ 
+ VOID
+ DumpPStoreToFile (
+@@ -584,31 +348,6 @@ CompareDevicePathAgtB (
+   return (Result >= 0);
+ }
+ 
+-VOID
+-DisplayDevicePaths (
+-  EFI_HANDLE  *HandleBuffer,
+-  UINTN       HandleCount
+-  )
+-{
+-  UINTN   i;
+-  UINT16  *Tmp;
+-
+-  for (i = 0; i < HandleCount; i++) {
+-    Tmp = ConvertDevicePathToText (DevicePathFromHandle (HandleBuffer[i]), TRUE, TRUE);
+-    if (Tmp != NULL) {
+-      CHAR8  TmpA[512];
+-      UnicodeStrToAsciiStrS (Tmp, TmpA, sizeof (TmpA));
+-      DEBUG ((DEBUG_ERROR, "%3d %a", i, TmpA));    // Output newline in different call as
+-    } else {
+-      DEBUG ((DEBUG_ERROR, "%3d NULL\n", i));
+-    }
+-
+-    DEBUG ((DEBUG_ERROR, "\n"));    // Device Paths can be longer than DEBUG limit.
+-    if (Tmp != NULL) {
+-      FreePool (Tmp);
+-    }
+-  }
+-}
+ 
+ VOID
+ SortHandles (
+@@ -623,14 +362,11 @@ SortHandles (
+   BOOLEAN                   Swap;
+   UINTN                     SwapCount;
+ 
+-  DEBUG ((DEBUG_ERROR, "%a\n", __FUNCTION__));
+   if (HandleCount < 2) {
+     return;
+   }
+ 
+   SwapCount = 0;
+-  DEBUG ((DEBUG_ERROR, "SortHandles - Before sorting\n"));
+-  DisplayDevicePaths (HandleBuffer, HandleCount);
+   do {
+     Swap = FALSE;
+     for (Index = 0; Index < (HandleCount - 1); Index++) {
+@@ -655,50 +391,10 @@ SortHandles (
+     }
+   } while ((Swap == TRUE) && (SwapCount < 50));
+ 
+-  DEBUG ((DEBUG_ERROR, "SortHandles - After sorting\n"));
+-  DisplayDevicePaths (HandleBuffer, HandleCount);
+-  DEBUG ((DEBUG_ERROR, "Exit %a, SwapCount = %d\n", __FUNCTION__, SwapCount));
+   return;
+ }
+ 
+ 
+-VOID
+-DumpHandlesByProtocol (
+-  EFI_GUID  *Guid,
+-  CHAR8     *Name
+-  )
+-{
+-  EFI_HANDLE                    *H;
+-  UINTN                         C, I;
+-  EFI_STATUS                    St;
+-  EFI_DEVICE_PATH_PROTOCOL      *Dp;
+-  CHAR16                        *Txt;
+-
+-  St = gBS->LocateHandleBuffer (ByProtocol, Guid, NULL, &C, &H);
+-  if (EFI_ERROR (St)) {
+-    DEBUG ((DEBUG_ERROR, "CENSUS %a: locate failed %r\n", Name, St));
+-    return;
+-  }
+-
+-  DEBUG ((DEBUG_ERROR, "CENSUS %a: %d handles\n", Name, C));
+-  for (I = 0; I < C; I++) {
+-    St = gBS->HandleProtocol (H[I], &gEfiDevicePathProtocolGuid, (VOID **)&Dp);
+-    if (EFI_ERROR (St) || (Dp == NULL)) {
+-      DEBUG ((DEBUG_ERROR, "  CENSUS %a[%d]: no devpath\n", Name, I));
+-      continue;
+-    }
+-
+-    Txt = ConvertDevicePathToText (Dp, TRUE, TRUE);
+-    if (Txt != NULL) {
+-      CHAR8  TxtA[512];
+-      UnicodeStrToAsciiStrS (Txt, TxtA, sizeof (TxtA));
+-      DEBUG ((DEBUG_ERROR, "  CENSUS %a[%d]: %a\n", Name, I, TxtA));
+-      FreePool (Txt);
+-    }
+-  }
+-
+-  return;
+-}
+ 
+ EFI_STATUS
+ SelectAndBootDevice (
+@@ -726,13 +422,7 @@ SelectAndBootDevice (
+     return Status;
+   }
+ 
+-  DEBUG ((DEBUG_ERROR, "Found %d handles\n", HandleCount));
+-  DisplayDevicePaths (Handles, HandleCount);
+-  DumpHandlesByProtocol (&gEfiBlockIoProtocolGuid, "BLOCKIO");
+-  DumpHandlesByProtocol (&gEfiDiskIoProtocolGuid, "DISKIO");
+-  DumpHandlesByProtocol (&gEfiUsbIoProtocolGuid, "USBIO");
+   FilterHandles (Handles, &HandleCount, ByFilter);
+-  DEBUG ((DEBUG_ERROR, "%d handles survived filtering\n", HandleCount));
+   if (HandleCount == 0) {
+     DEBUG ((DEBUG_ERROR, "No handles survived filtering!\n"));
+     return EFI_NOT_FOUND;
+@@ -778,9 +468,7 @@ SelectAndBootDevice (
+         }
+       }
+ 
+-      XWatch ("pre-efiboot");
+       EfiBootManagerBoot (&BootOption);
+-      XWatch ("post-efiboot");
+       Status = BootOption.Status;
+ 
+       EfiBootManagerFreeLoadOption (&BootOption);
+@@ -1008,7 +696,6 @@ MsBootPolicyEntry (
+     Parameters = (CHAR8 *)ImageInfo->LoadOptions;
+   }
+ 
+-  Dwc3Fix ("msentry");
+   DEBUG ((DEBUG_ERROR, "%a parameter = %a\n", __FUNCTION__, Parameters));
+ 
+   // Entry is from BDS as a boot option.
+@@ -1037,20 +724,14 @@ MsBootPolicyEntry (
+   EfiBootManagerConnectAll ();     // Connect All is required for this type of boot
+   DumpPStoreToFile ();           // v149: Serial-Log auf Datei
+   ResetMemoryTypeInfoVar ();      // v154: stale Variable raus
+-  DumpEfiMemoryMap ();             // v154: EfiMap ins Log
+-  DumpGcdMap ();                   // v154: GCD ins Log
+-  StressUsbBlockRead ();           // v157: BlockIo-Read-Stress (Ramdisk-Hang?)
+-  XWatch ("post-stress");
+ 
+   CleanLoadOptions (LoadOptionTypeBoot);    // Insure there are no dangling BOOT#### options.
+-  XWatch ("post-cleanload");
+ 
+   Status = EFI_SUCCESS;
+   DEBUG ((DEBUG_ERROR, "%a starting with parm %c\n", __FUNCTION__, *Parameters));
+   Index = 0;
+   while (BootSequence[Index] != MsBootDone) {
+     DEBUG ((DEBUG_ERROR, "Attempting boot type %d\n", BootSequence[Index]));
+-    XWatch ("boot-type");
+     switch (BootSequence[Index]) {
+       case MsBootPXE4:
+         StartNetworking ();
+-- 
+2.53.0
+

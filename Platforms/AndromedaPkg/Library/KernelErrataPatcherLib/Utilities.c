@@ -15,8 +15,46 @@
 **/
 #include "KernelErrataPatcherLib.h"
 
+#include <Library/PrintLib.h>
+#include <Library/SerialPortLib.h>
+
 #define IMAGE_DOS_SIGNATURE 0x5A4D
 #define IMAGE_NT_SIGNATURE 0x00004550
+
+/*
+  v179 diagnostic: KernelErrataPatcher is intentionally still SILENT through
+  FirmwarePrint, but the ExitBootServices transition needs a small number of
+  unconditional breadcrumbs.  Direct SerialPortWrite reaches the framebuffer
+  and pstore backends without depending on PcdDebugPrintErrorLevel or on the
+  boot-services console.
+*/
+STATIC BOOLEAN mKepSerialInitTried;
+STATIC BOOLEAN mKepSerialReady;
+
+VOID
+KepTracePrint(IN CONST CHAR8 *Format, ...)
+{
+  CHAR8   Buffer[192];
+  VA_LIST Marker;
+  UINTN   Length;
+
+  if (!mKepSerialInitTried) {
+    mKepSerialInitTried = TRUE;
+    mKepSerialReady     = !RETURN_ERROR(SerialPortInitialize());
+  }
+
+  if (!mKepSerialReady) {
+    return;
+  }
+
+  VA_START(Marker, Format);
+  Length = AsciiVSPrint(Buffer, sizeof(Buffer), Format, Marker);
+  VA_END(Marker);
+
+  if (Length != 0) {
+    SerialPortWrite((UINT8 *)Buffer, Length);
+  }
+}
 
 EFI_PHYSICAL_ADDRESS LocateWinloadBase(EFI_PHYSICAL_ADDRESS base, UINTN *size)
 {

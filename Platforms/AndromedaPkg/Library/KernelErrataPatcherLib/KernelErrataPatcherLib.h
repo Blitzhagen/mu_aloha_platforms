@@ -63,6 +63,9 @@
                                      : (IN_RANGE(x, '0', '9') ? x - '0' : 0))
 #define GET_BYTE(a, b) (GET_BITS(a) << 4 | GET_BITS(b))
 
+VOID
+KepTracePrint(IN CONST CHAR8 *Format, ...);
+
 EFI_STATUS
 EFIAPI
 KernelErrataPatcherExitBootServices(

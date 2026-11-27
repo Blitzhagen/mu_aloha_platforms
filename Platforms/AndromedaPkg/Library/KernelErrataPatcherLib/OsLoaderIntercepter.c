@@ -63,6 +63,7 @@ VOID KernelErrataPatcherApplyReadACTLREL1Patches(
 
   if (IllegalInstruction0 != 0) {
     FirmwarePrint("mrs x8, actlr_el1         -> 0x%p\n", IllegalInstruction0);
+    KepTracePrint("KEP-ACTLR: hit addr=0x%lx\n", (UINT64)IllegalInstruction0);
 
     CopyMemory(
         IllegalInstruction0, (EFI_PHYSICAL_ADDRESS)FixedInstruction0,
@@ -77,6 +78,9 @@ VOID InjectCodeIntoOsLoaderArm64TransferToKernel(
 {
   FirmwarePrint(
       "Patching bl OsLoaderArm64TransferToKernel -> (phys) 0x%p\n", current);
+  KepTracePrint(
+      "KEP-INJ: call=0x%lx shell=0x%lx\n", (UINT64)current,
+      (UINT64)NewOslArm64TransferToKernelAddr);
 
   *(UINT32 *)current = ARM64_BRANCH_LOCATION_INSTRUCTION(
       current, NewOslArm64TransferToKernelAddr);
@@ -95,7 +99,7 @@ VOID InjectCodeIntoOsLoaderArm64TransferToKernel(
 
 BOOLEAN FindAndInjectIntoOsLoaderArm64TransferToKernel(
     EFI_PHYSICAL_ADDRESS winloadBase, UINT32 BaseOffset,
-    UINT32 InstructionPatternMatch)
+    UINT32 InstructionPatternMatch, CONST CHAR8 *PatternName)
 {
   EFI_PHYSICAL_ADDRESS OslArm64TransferToKernelAddr =
       winloadBase + 0xC00 + BaseOffset;
@@ -109,6 +113,11 @@ BOOLEAN FindAndInjectIntoOsLoaderArm64TransferToKernel(
     if (ARM64_BRANCH_LOCATION_INSTRUCTION(
             current, OslArm64TransferToKernelAddr) == *(UINT32 *)current &&
         *(UINT32 *)(current + sizeof(UINT32)) == InstructionPatternMatch) {
+      KepTracePrint(
+          "KEP-HIT: %a off=0x%lx target=0x%lx call=0x%lx next=0x%lx shell=0x%lx\n",
+          PatternName, (UINT64)BaseOffset, (UINT64)OslArm64TransferToKernelAddr,
+          (UINT64)current, (UINT64)*(UINT32 *)(current + sizeof(UINT32)),
+          (UINT64)NewOslArm64TransferToKernelAddr);
       InjectCodeIntoOsLoaderArm64TransferToKernel(
           NewOslArm64TransferToKernelAddr, current);
       return TRUE;
@@ -127,7 +136,15 @@ VOID OslInterceptMain(IN EFI_PHYSICAL_ADDRESS fwpKernelSetupPhase1)
   EFI_PHYSICAL_ADDRESS winloadBase =
       LocateWinloadBase(fwpKernelSetupPhase1, &tempSize);
 
+  KepTracePrint(
+      "KEP-WL: base=0x%lx size=0x%lx\n", (UINT64)winloadBase,
+      (UINT64)tempSize);
+  KepTracePrint(
+      "KEP-UNPROT: start base=0x%lx size=0x%lx\n",
+      (UINT64)(winloadBase + EFI_PAGE_SIZE), (UINT64)tempSize);
+
   EFI_STATUS Status = UnprotectWinload(winloadBase + EFI_PAGE_SIZE, tempSize);
+  KepTracePrint("KEP-UNPROT: st=0x%lx\n", (UINT64)Status);
   if (EFI_ERROR(Status)) {
     FirmwarePrint(
         "Could not unprotect winload -> (phys) 0x%p (size) 0x%p %r\n",
@@ -149,32 +166,41 @@ VOID OslInterceptMain(IN EFI_PHYSICAL_ADDRESS fwpKernelSetupPhase1)
   BOOLEAN InjectedShellCode = FindAndInjectIntoOsLoaderArm64TransferToKernel(
       winloadBase,
       NT_OS_LOADER_ARM64_TRANSFER_TO_KERNEL_FUNCTION_OFFSET_BROMINE,
-      0x52800014);
+      0x52800014, "BROMINE");
 
   if (!InjectedShellCode) {
     InjectedShellCode = FindAndInjectIntoOsLoaderArm64TransferToKernel(
         winloadBase,
         NT_OS_LOADER_ARM64_TRANSFER_TO_KERNEL_FUNCTION_OFFSET_SELENIUM,
-        0xD2800002);
+        0xD2800002, "SELENIUM");
   }
 
   if (!InjectedShellCode) {
     InjectedShellCode = FindAndInjectIntoOsLoaderArm64TransferToKernel(
         winloadBase,
         NT_OS_LOADER_ARM64_TRANSFER_TO_KERNEL_FUNCTION_OFFSET_GERMANIUM,
-        0xD2800002);
+        0xD2800002, "GERMANIUM");
   }
 
   if (!InjectedShellCode) {
     InjectedShellCode = FindAndInjectIntoOsLoaderArm64TransferToKernel(
-        winloadBase, NT_OS_LOADER_ARM64_TRANSFER_TO_KERNEL_FUNCTION_OFFSET, 0xD2800002);
+        winloadBase, NT_OS_LOADER_ARM64_TRANSFER_TO_KERNEL_FUNCTION_OFFSET,
+        0xD2800002, "DEFAULT");
+  }
+
+  if (!InjectedShellCode) {
+    KepTracePrint("KEP-NOHIT: no transfer-to-kernel pattern matched\n");
   }
 
   FirmwarePrint(
       "Protecting winload        -> (phys) 0x%p (size) 0x%p\n", winloadBase,
       tempSize);
 
+  KepTracePrint(
+      "KEP-REPROT: start base=0x%lx size=0x%lx\n",
+      (UINT64)(winloadBase + EFI_PAGE_SIZE), (UINT64)tempSize);
   Status = ReProtectWinload(winloadBase + EFI_PAGE_SIZE, tempSize);
+  KepTracePrint("KEP-REPROT: st=0x%lx\n", (UINT64)Status);
   if (EFI_ERROR(Status)) {
     FirmwarePrint(
         "Could not reprotect winload -> (phys) 0x%p (size) 0x%p %r\n",
@@ -186,4 +212,5 @@ VOID OslInterceptMain(IN EFI_PHYSICAL_ADDRESS fwpKernelSetupPhase1)
 exit:
   FirmwarePrint(
       "OslFwpKernelSetupPhase1   <- (phys) 0x%p\n", fwpKernelSetupPhase1);
+  KepTracePrint("KEP-OSL-EXIT\n");
 }

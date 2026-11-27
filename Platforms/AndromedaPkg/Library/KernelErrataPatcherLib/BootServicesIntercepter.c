@@ -23,15 +23,26 @@ KernelErrataPatcherExitBootServices(
     IN EFI_HANDLE ImageHandle, IN UINTN MapKey,
     IN EFI_PHYSICAL_ADDRESS fwpKernelSetupPhase1)
 {
+  EFI_STATUS Status;
+
+  KepTracePrint(
+      "KEP-ENTRY: ra=0x%lx mk=0x%lx\n", (UINT64)fwpKernelSetupPhase1,
+      (UINT64)MapKey);
+
   // Might be called multiple times by winload in a loop failing few times
   gBS->ExitBootServices = mOriginalEfiExitBootServices;
   gBS->Hdr.CRC32        = 0;
   gBS->CalculateCrc32(gBS, sizeof(EFI_BOOT_SERVICES), &gBS->Hdr.CRC32);
 
+  KepTracePrint("KEP-RESTORE: original EBS restored\n");
+
   OslInterceptMain(fwpKernelSetupPhase1);
 
   // Call the original
-  return gBS->ExitBootServices(ImageHandle, MapKey);
+  KepTracePrint("KEP-EXIT: calling original EBS\n");
+  Status = gBS->ExitBootServices(ImageHandle, MapKey);
+  KepTracePrint("KEP-EBSRET: st=0x%lx\n", (UINT64)Status);
+  return Status;
 }
 
 VOID
@@ -41,4 +52,5 @@ InstallEFIBSIntercepter()
   gBS->ExitBootServices        = ExitBootServicesWrapper;
   gBS->Hdr.CRC32               = 0;
   gBS->CalculateCrc32(gBS, sizeof(EFI_BOOT_SERVICES), &gBS->Hdr.CRC32);
+  KepTracePrint("KEP-HOOK: EBS interceptor installed\n");
 }

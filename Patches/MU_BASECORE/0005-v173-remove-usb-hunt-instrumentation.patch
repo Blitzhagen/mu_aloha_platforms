@@ -1,0 +1,167 @@
+From 3bf9e4377c4d17305de9013b769de4cb8bc495bd Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Thu, 26 Nov 2026 18:43:00 +0100
+Subject: [PATCH] remove USB-hunt instrumentation:
+ CNCT/BSTART/BDONE/XWATCH/PSCWATCH
+
+---
+ MdeModulePkg/Core/Dxe/Event/Event.c           | 15 ------
+ MdeModulePkg/Core/Dxe/Hand/DriverSupport.c    | 46 -------------------
+ .../Library/UefiBootManagerLib/BmBoot.c       | 16 -------
+ 3 files changed, 77 deletions(-)
+
+diff --git a/MdeModulePkg/Core/Dxe/Event/Event.c b/MdeModulePkg/Core/Dxe/Event/Event.c
+index ad66f4d4ce..49e0ca3e9c 100644
+--- a/MdeModulePkg/Core/Dxe/Event/Event.c
++++ b/MdeModulePkg/Core/Dxe/Event/Event.c
+@@ -335,21 +335,6 @@ CoreCreateEventEx (
+   }
+   MU_CHANGE End: Supporting all TPLs */
+ 
+-  {
+-    // v167: arm PORTSC watch when ReadyToBoot group event is created
+-    extern BOOLEAN  gPscWatchArmed;
+-
+-    if ((EventGroup != NULL) &&
+-        (EventGroup->Data1 == 0x7CE88FB3) &&
+-        (EventGroup->Data2 == 0x4BD7) &&
+-        (EventGroup->Data3 == 0x4679) &&
+-        !gPscWatchArmed)
+-    {
+-      gPscWatchArmed = TRUE;
+-      DEBUG ((DEBUG_ERROR, "PSCWATCH armed (RTB group)\n"));
+-    }
+-  }
+-
+   return CoreCreateEventInternal (Type, NotifyTpl, NotifyFunction, NotifyContext, EventGroup, Event);
+ }
+ 
+diff --git a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+index b32054368a..64d7474f15 100644
+--- a/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
++++ b/MdeModulePkg/Core/Dxe/Hand/DriverSupport.c
+@@ -13,26 +13,6 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ // Driver Support Functions
+ //
+ 
+-// v167: PORTSC live watch, armed at ReadyToBoot (see Event.c)
+-BOOLEAN  gPscWatchArmed = FALSE;
+-
+-#define PSCWATCH_XHC_PHYS  0x0A600000ULL
+-
+-STATIC UINT32
+-PscWatchRead (
+-  UINTN  Port
+-  )
+-{
+-  volatile UINT8  *Base;
+-
+-  if (!gPscWatchArmed) {
+-    return 0;
+-  }
+-
+-  Base = (volatile UINT8 *)(UINTN)PSCWATCH_XHC_PHYS;
+-  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
+-}
+-
+ /**
+   Connects one or more drivers to a controller.
+ 
+@@ -85,13 +65,6 @@ CoreConnectController (
+   EFI_DEVICE_PATH_PROTOCOL  *FilePath;
+   EFI_DEVICE_PATH_PROTOCOL  *TempFilePath;
+ 
+-  if (!gPscWatchArmed) {
+-    gPscWatchArmed = TRUE;
+-    DEBUG ((DEBUG_ERROR, "PSCWATCH armed (first CNCT)\n"));
+-  }
+-
+-  DEBUG ((DEBUG_ERROR, "CNCT h=%x rec=%d p1=%x\n", (UINTN)ControllerHandle, (UINTN)Recursive, PscWatchRead (1)));
+-
+   //
+   // Make sure ControllerHandle is valid
+   //
+@@ -681,20 +654,6 @@ CoreConnectSingleController (
+           // A driver was found that supports ControllerHandle, so attempt to start the driver
+           // on ControllerHandle.
+           //
+-          {
+-            EFI_LOADED_IMAGE_PROTOCOL  *BmLi = NULL;
+-
+-            CoreHandleProtocol (
+-              DriverBinding->ImageHandle,
+-              &gEfiLoadedImageProtocolGuid,
+-              (VOID **)&BmLi
+-              );
+-            DEBUG ((DEBUG_ERROR, "BSTART drv=%x base=%x ctrl=%x p1=%x\n",
+-                    (UINTN)DriverBinding->ImageHandle,
+-                    (BmLi != NULL) ? (UINTN)BmLi->ImageBase : 0,
+-                    (UINTN)ControllerHandle,
+-                    PscWatchRead (1)));
+-          }
+           PERF_DRIVER_BINDING_START_BEGIN (DriverBinding->DriverBindingHandle, ControllerHandle);
+           Status = DriverBinding->Start (
+                                     DriverBinding,
+@@ -703,9 +662,6 @@ CoreConnectSingleController (
+                                     );
+           PERF_DRIVER_BINDING_START_END (DriverBinding->DriverBindingHandle, ControllerHandle);
+ 
+-          DEBUG ((DEBUG_ERROR, "BDONE  drv=%x ctrl=%x st=%r p1=%x\n",
+-                  (UINTN)DriverBinding->ImageHandle, (UINTN)ControllerHandle, Status, PscWatchRead (1)));
+-
+           if (!EFI_ERROR (Status)) {
+             //
+             // The driver was successfully started on ControllerHandle, so set a flag
+@@ -803,8 +759,6 @@ CoreDisconnectController (
+   PROTOCOL_INTERFACE           *Prot;
+   EFI_DRIVER_BINDING_PROTOCOL  *DriverBinding;
+ 
+-  DEBUG ((DEBUG_ERROR, "DCNCT h=%x drv=%x child=%x p1=%x\n", (UINTN)ControllerHandle, (UINTN)DriverImageHandle, (UINTN)ChildHandle, PscWatchRead (1)));
+-
+   //
+   // Make sure ControllerHandle is valid
+   //
+diff --git a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+index af87630308..c1f5eb4b7a 100644
+--- a/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
++++ b/MdeModulePkg/Library/UefiBootManagerLib/BmBoot.c
+@@ -1888,18 +1888,6 @@ BmReportLoadFailure (
+                         !EFI_SUCCESS    BootOption failed with this error status
+ 
+ **/
+-// v164: xHC PORTSC-Watch (gleiche Phys-Basis wie MsBootPolicy XWATCH)
+-#define XWATCH_XHC_PHYS  0x0A600000ULL
+-
+-STATIC UINT32
+-BmXWatchPort (
+-  UINTN  Port
+-  )
+-{
+-  volatile UINT8  *Base = (volatile UINT8 *)(UINTN)XWATCH_XHC_PHYS;
+-  return *(volatile UINT32 *)(Base + Base[0] + 0x400 + 0x10 * Port);
+-}
+-
+ VOID
+ EFIAPI
+ EfiBootManagerBoot (
+@@ -2135,8 +2123,6 @@ EfiBootManagerBoot (
+     return;
+   }
+ 
+-  DEBUG ((DEBUG_ERROR, "XWATCH post-loadimage: psc0=%x psc1=%x\n", BmXWatchPort (0), BmXWatchPort (1)));
+-
+   //
+   // Provide the image with its load options
+   //
+@@ -2172,8 +2158,6 @@ EfiBootManagerBoot (
+ 
+   REPORT_STATUS_CODE (EFI_PROGRESS_CODE, PcdGet32 (PcdProgressCodeOsLoaderStart));
+ 
+-  DEBUG ((DEBUG_ERROR, "XWATCH pre-startimage: psc0=%x psc1=%x\n", BmXWatchPort (0), BmXWatchPort (1)));
+-
+   Status = gBS->StartImage (ImageHandle, &BootOption->ExitDataSize, &BootOption->ExitData);
+   DEBUG ((DEBUG_INFO | DEBUG_LOAD, "Image Return Status = %r\n", Status));
+   BootOption->Status = Status;
+-- 
+2.53.0
+

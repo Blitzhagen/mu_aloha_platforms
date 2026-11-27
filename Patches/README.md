@@ -6,8 +6,8 @@ Die gesamte lokale Firmware-Arbeit liegt als Patch-Serie hier:
 
 | Verzeichnis | Submodule | Commits | Inhalt |
 |---|---|---|---|
-| `MU_BASECORE/` | MU_BASECORE | 2 | WIP bis v73 (Build-Fixes, gts7xllite-Anpassungen); v156 EBS-TRACE-Marker in `CoreExitBootServices` + `RuntimeDriverSetVirtualAddressMap` |
-| `Common-MU/` | Common/MU | 5 | WIP bis v73; MsBootPolicy CENSUS-Instrumentierung + DEBUG→Print (v144/145); DEBUG-Diagnose + Raw-LBA-Logkanal (v152/153); MMAP/GCD-Dump + MTI-Var-Reset (v154); v157 BlockIo-Read-Stress |
+| `MU_BASECORE/` | MU_BASECORE | 7 | WIP bis v73; v156 EBS-TRACE; v164-v170 DxeCore/BmBoot/PSCWATCH-Diagnose; v173 USB-Hunt-Cleanup; v179 direct-serial EBS-TRACE in `CoreExitBootServices` |
+| `Common-MU/` | Common/MU | 10 | WIP bis v73; MsBootPolicy CENSUS/DEBUG/Raw-LBA/MMAP/BlockIo-Stress/XWATCH-Diagnose; v169-v171 Dwc3Fix; v173 USB-Hunt-Cleanup |
 | `Common-MU_TIANO/` | Common/MU_TIANO | 1 | WIP bis v73 |
 
 ## Anwenden (frischer Clone)
@@ -23,8 +23,8 @@ Hinweis: `apply_patches.sh` nutzt `git am --ignore-whitespace`, weil Upstream
 teilweise CRLF-Dateien fuehrt (`.gitattributes`: `* -text`), die Patch-Serie
 aber auf einem LF-normalisierten Tree entstand.
 
-Danach entspricht der Tree dem Stand des Docker-Build-Trees `/work/mu`
-(Submodule-HEADs: MU_BASECORE `94340f38`, Common/MU `cd861219`,
-Common/MU_TIANO `868fd026`).
+Danach entspricht der Tree dem lokalen Build-Stand dieses Branches
+(Submodule-HEADs: MU_BASECORE `e37b9a8ebb`, Common/MU `130a693a`,
+Common/MU_TIANO `07e3d31434`).
 
 Build immer DEBUG: `python3 build_uefi.py -d samsung-gts7xllite -t DEBUG`

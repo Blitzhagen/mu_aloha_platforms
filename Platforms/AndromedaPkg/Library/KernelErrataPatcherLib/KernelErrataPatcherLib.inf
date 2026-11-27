@@ -40,6 +40,8 @@
   DxeServicesTableLib
   MemoryAllocationLib
   PerformanceLib
+  PrintLib
+  SerialPortLib
   UefiBootServicesTableLib
   UefiLib
 
