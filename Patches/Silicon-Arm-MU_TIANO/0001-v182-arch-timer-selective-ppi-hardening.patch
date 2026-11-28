@@ -1,0 +1,396 @@
+From 994542393b6fa59afa88774155f9588c9806c05b Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Sat, 28 Nov 2026 03:30:54 +0100
+Subject: [PATCH] v182: harden arch timer interrupt setup
+
+---
+ ArmPkg/Drivers/TimerDxe/TimerDxe.c            | 241 ++++++++++++++----
+ ArmPkg/Drivers/TimerDxe/TimerDxe.inf          |   2 +
+ .../Library/ArmGenericTimerCounterLib.h       |   6 +
+ .../ArmGenericTimerPhyCounterLib.c            |   9 +
+ .../ArmGenericTimerVirtCounterLib.c           |   9 +
+ 5 files changed, 220 insertions(+), 47 deletions(-)
+
+diff --git a/ArmPkg/Drivers/TimerDxe/TimerDxe.c b/ArmPkg/Drivers/TimerDxe/TimerDxe.c
+index 92e2182b74..85be26c82a 100644
+--- a/ArmPkg/Drivers/TimerDxe/TimerDxe.c
++++ b/ArmPkg/Drivers/TimerDxe/TimerDxe.c
+@@ -17,6 +17,8 @@
+ #include <Library/UefiLib.h>
+ #include <Library/PcdLib.h>
+ #include <Library/IoLib.h>
++#include <Library/PrintLib.h>
++#include <Library/SerialPortLib.h>
+ #include <Library/ArmGenericTimerCounterLib.h>
+ 
+ #include <Protocol/Timer.h>
+@@ -36,6 +38,49 @@ UINT64  mElapsedPeriod = 1;
+ // Cached copy of the Hardware Interrupt protocol instance
+ EFI_HARDWARE_INTERRUPT_PROTOCOL  *gInterrupt = NULL;
+ 
++// v182 bring-up diagnostics/hardening.  Direct serial writes are deliberate:
++// the regression being debugged kills the machine long before BlkTraceDxe or
++// BDS are reached.  Keep IRQ prints extremely sparse and mostly fixed-width.
++STATIC UINT64  mTimerIrqCount;
++STATIC UINT64  mTimerNotifyCount;
++
++STATIC
++VOID
++TimerDbgWrite (
++  IN CONST CHAR8  *String
++  )
++{
++  SerialPortWrite ((UINT8 *)String, AsciiStrLen (String));
++}
++
++STATIC
++VOID
++TimerDbgPrint (
++  IN CONST CHAR8  *Format,
++  ...
++  )
++{
++  CHAR8    Buffer[192];
++  VA_LIST  Marker;
++  UINTN    Length;
++
++  VA_START (Marker, Format);
++  Length = AsciiVSPrint (Buffer, sizeof (Buffer), Format, Marker);
++  VA_END (Marker);
++  if (Length != 0) {
++    SerialPortWrite ((UINT8 *)Buffer, Length);
++  }
++}
++
++STATIC
++BOOLEAN
++TimerTraceThisIrq (
++  VOID
++  )
++{
++  return ((mTimerIrqCount <= 4) || ((mTimerIrqCount % 100) == 0));
++}
++
+ /**
+   This function registers the handler NotifyFunction so it is called every time
+   the timer interrupt fires.  It also passes the amount of time since the last
+@@ -144,8 +189,32 @@ TimerDriverSetTimerPeriod (
+     //             = TimerPeriod.10^-4 x Frequency.10^-3
+     //             = (TimerPeriod x Frequency) x 10^-7
+     // MU_CHANGE - Start - ARM64 VS Change
+-    TimerTicks = MultU64x32 (TimerPeriod, (UINT32)ArmGenericTimerGetTimerFreq ());
+-    TimerTicks = DivU64x32 (TimerTicks, 10000000U);
++    {
++      UINTN  TimerFrequency;
++
++      TimerFrequency = ArmGenericTimerGetTimerFreq ();
++      if (TimerFrequency == 0) {
++        mTimerTicks    = 0;
++        mTimerPeriod   = 0;
++        mElapsedPeriod = 1;
++        TimerDbgPrint ("TERR: cntfrq=0, period=%lu timer left disabled\n", TimerPeriod);
++        return EFI_DEVICE_ERROR;
++      }
++
++      TimerTicks = MultU64x32 (TimerPeriod, (UINT32)TimerFrequency);
++      TimerTicks = DivU64x32 (TimerTicks, 10000000U);
++      if (TimerTicks == 0) {
++        mTimerTicks    = 0;
++        mTimerPeriod   = 0;
++        mElapsedPeriod = 1;
++        TimerDbgPrint (
++          "TERR: zero timer ticks, period=%lu frq=%lu timer left disabled\n",
++          TimerPeriod,
++          (UINT64)TimerFrequency
++          );
++        return EFI_DEVICE_ERROR;
++      }
++    }
+     // MU_CHANGE - End - ARM64 VS Change
+ 
+     // Raise TPL to update the mTimerTicks and mTimerPeriod to ensure these values
+@@ -293,6 +362,22 @@ TimerInterruptHandler (
+   EFI_TPL  OriginalTPL;
+   UINT64   CurrentValue;
+   UINT64   CompareValue;
++  UINT64   ElapsedPeriods;
++  UINT32   TimerCtrlReg;
++  BOOLEAN  Trace;
++
++  mTimerIrqCount++;
++  Trace = TimerTraceThisIrq ();
++  if (Trace) {
++    TimerDbgPrint (
++      "TIR: n=%lu src=%lu ctl=%x cval=%lx cnt=%lx\n",
++      mTimerIrqCount,
++      (UINT64)Source,
++      (UINT32)ArmGenericTimerGetTimerCtrlReg (),
++      ArmGenericTimerGetCompareVal (),
++      ArmGenericTimerGetSystemCount ()
++      );
++  }
+ 
+   //
+   // DXE core uses this callback for the EFI timer tick. The DXE core uses locks
+@@ -301,41 +386,77 @@ TimerInterruptHandler (
+   //
+   OriginalTPL = gBS->RaiseTPL (TPL_HIGH_LEVEL);
+ 
+-  // Signal end of interrupt early to help avoid losing subsequent ticks
+-  // from long duration handlers
+-  gInterrupt->EndOfInterrupt (gInterrupt, Source);
+-
+   // Check if the timer interrupt is active
+-  if ((ArmGenericTimerGetTimerCtrlReg ()) & ARM_ARCH_TIMER_ISTATUS) {
+-    if (mTimerNotifyFunction != 0) {
+-      mTimerNotifyFunction (mTimerPeriod * mElapsedPeriod);
+-    }
+-
++  TimerCtrlReg = (UINT32)ArmGenericTimerGetTimerCtrlReg ();
++  if ((TimerCtrlReg & ARM_ARCH_TIMER_ISTATUS) != 0) {
+     //
+-    // Reload the Timer
++    // A level-triggered arch timer must be deasserted before EOI and before
++    // running potentially long event notification code.  The upstream order
++    // (EOI, notify, then re-arm) can re-pend the same interrupt forever on a
++    // working physical timer.  Also compute the catch-up arithmetically: the
++    // original do/while loop is a dead loop if mTimerTicks is zero and can be
++    // unboundedly long for a stale/past compare value.
+     //
+-
+-    // Get current counter value
+     CurrentValue = ArmGenericTimerGetSystemCount ();
+-    // Get the counter value to compare with
+     CompareValue = ArmGenericTimerGetCompareVal ();
+ 
+-    // This loop is needed in case we missed interrupts (eg: case when the interrupt handling
+-    // has taken longer than mTickPeriod).
+-    // Note: Physical Counter is counting up
+-    mElapsedPeriod = 0;
+-    do {
+-      CompareValue += mTimerTicks;
+-      mElapsedPeriod++;
+-    } while (CompareValue < CurrentValue);
++    if (mTimerTicks == 0) {
++      ArmGenericTimerDisableTimer ();
++      gInterrupt->EndOfInterrupt (gInterrupt, Source);
++      if (Trace) {
++        TimerDbgWrite ("TERR: irq with zero tick interval, timer disabled\n");
++      }
++      gBS->RestoreTPL (OriginalTPL);
++      return;
++    }
++
++    if (CompareValue <= CurrentValue) {
++      ElapsedPeriods = DivU64x64Remainder (CurrentValue - CompareValue, mTimerTicks, NULL) + 1;
++      CompareValue  += MultU64x64 (ElapsedPeriods, mTimerTicks);
++    } else {
++      ElapsedPeriods = 1;
++    }
++
++    mElapsedPeriod = ElapsedPeriods;
+ 
+-    // Set next compare value
++    // Deassert the timer interrupt first, then signal EOI.
+     ArmGenericTimerSetCompareVal (CompareValue);
+     ArmGenericTimerReenableTimer ();
+     ArmInstructionSynchronizationBarrier ();
++    gInterrupt->EndOfInterrupt (gInterrupt, Source);
++
++    if (Trace) {
++      TimerDbgPrint (
++        "TRM: n=%lu ep=%lu next=%lx cnt=%lx ctl=%x\n",
++        mTimerIrqCount,
++        ElapsedPeriods,
++        CompareValue,
++        ArmGenericTimerGetSystemCount (),
++        (UINT32)ArmGenericTimerGetTimerCtrlReg ()
++        );
++    }
++
++    if (mTimerNotifyFunction != 0) {
++      mTimerNotifyFunction (mTimerPeriod * mElapsedPeriod);
++      mTimerNotifyCount++;
++      if (Trace) {
++        TimerDbgPrint ("TNT: n=%lu notify=%lu\n", mTimerIrqCount, mTimerNotifyCount);
++      }
++    }
++  } else {
++    // This can be another timer PPI for which this handler was registered.
++    // There is no per-source control register distinction in the generic ARM
++    // timer driver, so just EOI it; never loop or touch the compare value.
++    gInterrupt->EndOfInterrupt (gInterrupt, Source);
++    if (Trace) {
++      TimerDbgPrint ("TIX: n=%lu src=%lu inactive ctl=%x\n", mTimerIrqCount, (UINT64)Source, TimerCtrlReg);
++    }
+   }
+ 
+   gBS->RestoreTPL (OriginalTPL);
++  if (Trace) {
++    TimerDbgPrint ("TX: n=%lu\n", mTimerIrqCount);
++  }
+ }
+ 
+ /**
+@@ -361,7 +482,17 @@ TimerInitialize (
+   EFI_HANDLE  Handle;
+   EFI_STATUS  Status;
+   UINTN       TimerCtrlReg;
+-  UINT32      TimerHypIntrNum;
++
++  TimerDbgPrint (
++    "TINI: frq=%lu pct=%lx vct=%lx pc=%x pcv=%lx vc=%x vcv=%lx\n",
++    (UINT64)ArmReadCntFrq (),
++    ArmReadCntPct (),
++    ArmReadCntvCt (),
++    (UINT32)ArmReadCntpCtl (),
++    ArmReadCntpCval (),
++    (UINT32)ArmReadCntvCtl (),
++    ArmReadCntvCval ()
++    );
+ 
+   if (ArmIsArchTimerImplemented () == 0) {
+     DEBUG ((DEBUG_ERROR, "ARM Architectural Timer is not available in the CPU, hence can't use this Driver \n"));
+@@ -380,32 +511,40 @@ TimerInitialize (
+   Status = TimerDriverSetTimerPeriod (&gTimer, 0);
+   ASSERT_EFI_ERROR (Status);
+ 
+-  // Install secure and Non-secure interrupt handlers
+-  // Note: Because it is not possible to determine the security state of the
+-  // CPU dynamically, we just install interrupt handler for both sec and non-sec
+-  // timer PPI
+-  Status = gInterrupt->RegisterInterruptSource (gInterrupt, PcdGet32 (PcdArmArchTimerVirtIntrNum), TimerInterruptHandler);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  //
+-  // The hypervisor timer interrupt may be omitted by implementations that
+-  // execute under virtualization.
+-  //
+-  TimerHypIntrNum = PcdGet32 (PcdArmArchTimerHypIntrNum);
+-  if (TimerHypIntrNum != 0) {
+-    Status = gInterrupt->RegisterInterruptSource (gInterrupt, TimerHypIntrNum, TimerInterruptHandler);
++  // Register only the interrupt that belongs to the counter implementation
++  // actually linked into this driver.  Registering all four timer PPIs is not
++  // harmless on Qualcomm parts: RegisterInterruptSource() enables the GIC
++  // input immediately, while this handler can only inspect/deassert the one
++  // counter architecture selected by ArmGenericTimerCounterLib.  A stale or
++  // firmware-armed unused PPI would therefore become a permanent level-
++  // interrupt storm (EOI without source deassert).
++  if (ArmGenericTimerIsPhysicalTimer ()) {
++    Status = gInterrupt->RegisterInterruptSource (gInterrupt, PcdGet32 (PcdArmArchTimerIntrNum), TimerInterruptHandler);
+     ASSERT_EFI_ERROR (Status);
++    TimerDbgPrint ("TREG: phys PPI=%lu\n", (UINT64)PcdGet32 (PcdArmArchTimerIntrNum));
++  } else {
++    Status = gInterrupt->RegisterInterruptSource (gInterrupt, PcdGet32 (PcdArmArchTimerVirtIntrNum), TimerInterruptHandler);
++    ASSERT_EFI_ERROR (Status);
++    TimerDbgPrint ("TREG: virt PPI=%lu\n", (UINT64)PcdGet32 (PcdArmArchTimerVirtIntrNum));
+   }
+ 
+-  Status = gInterrupt->RegisterInterruptSource (gInterrupt, PcdGet32 (PcdArmArchTimerSecIntrNum), TimerInterruptHandler);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  Status = gInterrupt->RegisterInterruptSource (gInterrupt, PcdGet32 (PcdArmArchTimerIntrNum), TimerInterruptHandler);
+-  ASSERT_EFI_ERROR (Status);
+-
+-  // Set up default timer
++  // Set up default timer.  A bad/missing CNTFRQ must not turn the first
++  // physical timer interrupt into a machine-killing storm; keep booting with
++  // the timer disabled so the rest of the platform can be diagnosed.
+   Status = TimerDriverSetTimerPeriod (&gTimer, FixedPcdGet32 (PcdTimerPeriod)); // TIMER_DEFAULT_PERIOD
+-  ASSERT_EFI_ERROR (Status);
++  if (EFI_ERROR (Status)) {
++    TimerDbgPrint ("TERR: initial SetTimerPeriod st=%lx\n", (UINT64)Status);
++  } else {
++    TimerDbgPrint (
++      "TARM: period=%lu ticks=%lu frq=%lu cval=%lx cnt=%lx ctl=%x\n",
++      (UINT64)FixedPcdGet32 (PcdTimerPeriod),
++      mTimerTicks,
++      (UINT64)ArmGenericTimerGetTimerFreq (),
++      ArmGenericTimerGetCompareVal (),
++      ArmGenericTimerGetSystemCount (),
++      (UINT32)ArmGenericTimerGetTimerCtrlReg ()
++      );
++  }
+ 
+   Handle = NULL;
+   // Install the Timer Architectural Protocol onto a new handle
+@@ -420,6 +559,14 @@ TimerInitialize (
+   // Everything is ready, unmask and enable timer interrupts
+   TimerCtrlReg = ARM_ARCH_TIMER_ENABLE;
+   ArmGenericTimerSetTimerCtrlReg (TimerCtrlReg);
++  TimerDbgPrint (
++    "TRDY: ctl=%x cval=%lx cnt=%lx irq=%lu notify=%lu\n",
++    (UINT32)ArmGenericTimerGetTimerCtrlReg (),
++    ArmGenericTimerGetCompareVal (),
++    ArmGenericTimerGetSystemCount (),
++    mTimerIrqCount,
++    mTimerNotifyCount
++    );
+ 
+   // Register for an ExitBootServicesEvent
+   Status = gBS->CreateEvent (EVT_SIGNAL_EXIT_BOOT_SERVICES, TPL_NOTIFY, ExitBootServicesEvent, NULL, &EfiExitBootServicesEvent);
+diff --git a/ArmPkg/Drivers/TimerDxe/TimerDxe.inf b/ArmPkg/Drivers/TimerDxe/TimerDxe.inf
+index 8b2d4b0fab..fcaaf5ff71 100644
+--- a/ArmPkg/Drivers/TimerDxe/TimerDxe.inf
++++ b/ArmPkg/Drivers/TimerDxe/TimerDxe.inf
+@@ -35,6 +35,8 @@
+   DebugLib
+   UefiDriverEntryPoint
+   IoLib
++  PrintLib
++  SerialPortLib
+   ArmGenericTimerCounterLib
+ 
+ [Guids]
+diff --git a/ArmPkg/Include/Library/ArmGenericTimerCounterLib.h b/ArmPkg/Include/Library/ArmGenericTimerCounterLib.h
+index 45a32c6c2c..cbeef0d26a 100644
+--- a/ArmPkg/Include/Library/ArmGenericTimerCounterLib.h
++++ b/ArmPkg/Include/Library/ArmGenericTimerCounterLib.h
+@@ -82,4 +82,10 @@ ArmGenericTimerSetCompareVal (
+   IN   UINT64  Value
+   );
+ 
++BOOLEAN
++EFIAPI
++ArmGenericTimerIsPhysicalTimer (
++  VOID
++  );
++
+ #endif // ARM_GENERIC_TIMER_COUNTER_LIB_H_
+diff --git a/ArmPkg/Library/ArmGenericTimerPhyCounterLib/ArmGenericTimerPhyCounterLib.c b/ArmPkg/Library/ArmGenericTimerPhyCounterLib/ArmGenericTimerPhyCounterLib.c
+index fbbecdc528..94e36324ca 100644
+--- a/ArmPkg/Library/ArmGenericTimerPhyCounterLib/ArmGenericTimerPhyCounterLib.c
++++ b/ArmPkg/Library/ArmGenericTimerPhyCounterLib/ArmGenericTimerPhyCounterLib.c
+@@ -124,3 +124,12 @@ ArmGenericTimerSetCompareVal (
+ {
+   ArmWriteCntpCval (Value);
+ }
++
++BOOLEAN
++EFIAPI
++ArmGenericTimerIsPhysicalTimer (
++  VOID
++  )
++{
++  return TRUE;
++}
+diff --git a/ArmPkg/Library/ArmGenericTimerVirtCounterLib/ArmGenericTimerVirtCounterLib.c b/ArmPkg/Library/ArmGenericTimerVirtCounterLib/ArmGenericTimerVirtCounterLib.c
+index 893125a111..b06dd4141b 100644
+--- a/ArmPkg/Library/ArmGenericTimerVirtCounterLib/ArmGenericTimerVirtCounterLib.c
++++ b/ArmPkg/Library/ArmGenericTimerVirtCounterLib/ArmGenericTimerVirtCounterLib.c
+@@ -124,3 +124,12 @@ ArmGenericTimerSetCompareVal (
+ {
+   ArmWriteCntvCval (Value);
+ }
++
++BOOLEAN
++EFIAPI
++ArmGenericTimerIsPhysicalTimer (
++  VOID
++  )
++{
++  return FALSE;
++}
+-- 
+2.53.0
+

@@ -16,5 +16,6 @@ apply() {
 apply MU_BASECORE      MU_BASECORE
 apply Common/MU        Common-MU
 apply Common/MU_TIANO  Common-MU_TIANO
+apply Silicon/Arm/MU_TIANO Silicon-Arm-MU_TIANO
 
 echo "All local patches applied. Build with: python3 build_uefi.py -d samsung-gts7xllite -t DEBUG"
