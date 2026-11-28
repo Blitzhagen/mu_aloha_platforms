@@ -46,6 +46,22 @@
 #define BSLIVE_MAX_FAILLOGS   8
 #define BSLIVE_GMM_PRINT_MOD  16
 
+/*
+  v183 progress-vs-spin discriminator.  Counting alone cannot distinguish
+  useful loader work from a cyclic allocate/free loop.  Keep a compact
+  sequence fingerprint, an ever-seen-address bloom filter, and a bounded
+  open-addressed outstanding-allocation table.  All storage is static: the
+  probes must never allocate memory themselves.
+*/
+#define BSLIVE_BLOOM_WORDS        1024  /* 65536 bits */
+#define BSLIVE_BLOOM_BITS         (BSLIVE_BLOOM_WORDS * 64)
+
+#define BSLIVE_OP_ALLOC_PAGES     1
+#define BSLIVE_OP_ALLOC_POOL      2
+#define BSLIVE_OP_FREE_PAGES      3
+#define BSLIVE_OP_FREE_POOL       4
+#define BSLIVE_OP_GET_MEMORY_MAP  5
+
 #define GICD_CTLR_OFFSET              0x000
 #define GICR_WAKER_OFFSET             0x014
 #define GICR_SGI_PPI_FRAME_OFFSET     0x10000
@@ -98,6 +114,25 @@ STATIC UINT64               mBsEvents;
 STATIC UINT32               mApFailPrints;
 STATIC UINT32               mPoolFailPrints;
 STATIC UINT64               mScanTimerTicks;
+
+STATIC UINT64               mPoolBloom[BSLIVE_BLOOM_WORDS];
+
+STATIC UINT64               mWinEvents;
+STATIC UINT64               mWinFingerprint;
+STATIC UINT64               mWinCallerFingerprint;
+STATIC UINT64               mWinPoolAllocs;
+STATIC UINT64               mWinPoolFrees;
+STATIC UINT64               mWinPoolAllocBytes;
+STATIC UINT64               mWinNewAddresses;
+STATIC UINT64               mWinMinAddr = MAX_UINT64;
+STATIC UINT64               mWinMaxAddr;
+STATIC UINT64               mWinLastAllocAddr;
+STATIC UINT64               mWinLastAllocSize;
+STATIC UINT64               mWinLastAllocCaller;
+STATIC UINT64               mWinLastFreeAddr;
+STATIC UINT64               mWinLastFreeCaller;
+STATIC UINT64               mPrevWinFingerprint;
+STATIC UINT64               mRepeatWinCount;
 
 STATIC
 EFI_STATUS
@@ -154,30 +189,154 @@ PrintTimerGicState (
     );
 }
 
+STATIC
+UINT64
+BsRotl64 (
+  IN UINT64  Value,
+  IN UINTN   Bits
+  )
+{
+  return (Value << Bits) | (Value >> (64 - Bits));
+}
+
+STATIC
+UINT64
+BsMix64 (
+  IN UINT64  Value
+  )
+{
+  Value ^= Value >> 33;
+  Value *= 0xff51afd7ed558ccdULL;
+  Value ^= Value >> 33;
+  Value *= 0xc4ceb9fe1a85ec53ULL;
+  Value ^= Value >> 33;
+  return Value;
+}
+
+STATIC
+UINT64
+BsReturnAddress (
+  VOID
+  )
+{
+#if defined(__clang__) || defined(__GNUC__)
+  return (UINT64)(UINTN)__builtin_return_address (0);
+#else
+  return 0;
+#endif
+}
+
+STATIC
+VOID
+PoolBloomNote (
+  IN UINT64  Address
+  )
+{
+  UINT64  Bit;
+  UINT64  Mask;
+
+  if (Address == 0) {
+    return;
+  }
+
+  Bit  = BsMix64 (Address >> 4) & (BSLIVE_BLOOM_BITS - 1);
+  Mask = 1ULL << (Bit & 63);
+  if ((mPoolBloom[Bit / 64] & Mask) == 0) {
+    mPoolBloom[Bit / 64] |= Mask;
+    mWinNewAddresses++;
+  }
+}
+
+STATIC
+VOID
+BsLiveResetWindow (
+  VOID
+  )
+{
+  mWinEvents              = 0;
+  mWinFingerprint         = 0;
+  mWinCallerFingerprint   = 0;
+  mWinPoolAllocs          = 0;
+  mWinPoolFrees           = 0;
+  mWinPoolAllocBytes      = 0;
+  mWinNewAddresses        = 0;
+  mWinMinAddr             = MAX_UINT64;
+  mWinMaxAddr             = 0;
+  mWinLastAllocAddr       = 0;
+  mWinLastAllocSize       = 0;
+  mWinLastAllocCaller     = 0;
+  mWinLastFreeAddr        = 0;
+  mWinLastFreeCaller      = 0;
+}
+
 /*
   Heartbeat is deliberately cheap: one short line per 4096 boot-service
-  memory events.  During a healthy winload phase thousands of allocations
-  are expected, so a continuing heartbeat after the last BLKRD line means
-  winload is alive and working; an abrupt stop means frozen/crashed.
+  memory events.  v183 adds a sequence/caller fingerprint and address-reuse
+  metrics.  Interpretation:
+
+  - repeated fh/ch with nw=0 and balanced pa/pf is a strong cyclic-spin
+    signature;
+  - changing fh/ch or continuing nw growth is progressive loader work,
+    even if the alloc/free rate looks uniform.
 */
 STATIC
 VOID
 BsLiveEvent (
-  VOID
+  IN UINT32  Op,
+  IN UINT64  Address,
+  IN UINT64  Size,
+  IN UINT64  Caller
   )
 {
+  UINT64  Body;
+
   mBsEvents++;
+  mWinEvents++;
+
+  Body = Address ^ BsRotl64 (Size, 17) ^ ((UINT64)Op << 56);
+  mWinFingerprint = BsRotl64 (mWinFingerprint ^ Body, 9) + 0x9e3779b97f4a7c15ULL;
+  mWinCallerFingerprint = BsRotl64 (mWinCallerFingerprint ^ (Caller + ((UINT64)Op << 32)), 13) +
+                          0xbf58476d1ce4e5b9ULL;
+
   if ((mBsEvents % BSLIVE_HEARTBEAT) == 0) {
+    if ((mWinFingerprint == mPrevWinFingerprint) &&
+        (mWinEvents == BSLIVE_HEARTBEAT)) {
+      mRepeatWinCount++;
+    } else {
+      mRepeatWinCount = 0;
+    }
+    mPrevWinFingerprint = mWinFingerprint;
+
     BlkTracePrint (
-      "BSHB: ev=%lu ap=%lu pool=%lu gmm=%lu af=%lu pf=%lu\n",
+      "BSHB: ev=%lu ap=%lu pool=%lu fp=%lu fpool=%lu gmm=%lu af=%lu pf=%lu fh=%lx ch=%lx rep=%lu\n",
       mBsEvents,
       mApCalls,
       mPoolCalls,
+      mFpCalls,
+      mFpoolCalls,
       mGmmCalls,
       mApFail,
-      mPoolFail
+      mPoolFail,
+      mWinFingerprint,
+      mWinCallerFingerprint,
+      mRepeatWinCount
+      );
+    BlkTracePrint (
+      "BSPM: nw=%lu pa=%lu pf=%lu ab=%lx amin=%lx amax=%lx la=%lx/%lx lc=%lx lf=%lx ld=%lx\n",
+      mWinNewAddresses,
+      mWinPoolAllocs,
+      mWinPoolFrees,
+      mWinPoolAllocBytes,
+      (mWinMinAddr == MAX_UINT64) ? 0 : mWinMinAddr,
+      mWinMaxAddr,
+      mWinLastAllocAddr,
+      mWinLastAllocSize,
+      mWinLastAllocCaller,
+      mWinLastFreeAddr,
+      mWinLastFreeCaller
       );
     PrintTimerGicState ("BSTM");
+    BsLiveResetWindow ();
   }
 }
 
@@ -192,8 +351,16 @@ TracedAllocatePages (
   )
 {
   EFI_STATUS  Status;
+  UINT64      Caller;
+  UINT64      Allocated;
 
-  Status = mOrigAllocatePages (Type, MemoryType, Pages, Memory);
+  Caller    = BsReturnAddress ();
+  Status    = mOrigAllocatePages (Type, MemoryType, Pages, Memory);
+  Allocated = 0;
+  if (!EFI_ERROR (Status) && (Memory != NULL)) {
+    Allocated = (UINT64)*Memory;
+  }
+
   mApCalls++;
   if (EFI_ERROR (Status)) {
     mApFail++;
@@ -208,7 +375,7 @@ TracedAllocatePages (
         );
     }
   }
-  BsLiveEvent ();
+  BsLiveEvent (BSLIVE_OP_ALLOC_PAGES, Allocated, (UINT64)Pages * EFI_PAGE_SIZE, Caller);
   return Status;
 }
 
@@ -222,8 +389,28 @@ TracedAllocatePool (
   )
 {
   EFI_STATUS  Status;
+  UINT64      Caller;
+  UINT64      Allocated;
 
-  Status = mOrigAllocatePool (PoolType, Size, Buffer);
+  Caller    = BsReturnAddress ();
+  Status    = mOrigAllocatePool (PoolType, Size, Buffer);
+  Allocated = 0;
+  if (!EFI_ERROR (Status) && (Buffer != NULL) && (*Buffer != NULL)) {
+    Allocated = (UINT64)(UINTN)*Buffer;
+    mWinPoolAllocs++;
+    mWinPoolAllocBytes += (UINT64)Size;
+    if ((mWinMinAddr == MAX_UINT64) || (Allocated < mWinMinAddr)) {
+      mWinMinAddr = Allocated;
+    }
+    if (Allocated > mWinMaxAddr) {
+      mWinMaxAddr = Allocated;
+    }
+    mWinLastAllocAddr   = Allocated;
+    mWinLastAllocSize   = (UINT64)Size;
+    mWinLastAllocCaller = Caller;
+    PoolBloomNote (Allocated);
+  }
+
   mPoolCalls++;
   if (EFI_ERROR (Status)) {
     mPoolFail++;
@@ -237,7 +424,7 @@ TracedAllocatePool (
         );
     }
   }
-  BsLiveEvent ();
+  BsLiveEvent (BSLIVE_OP_ALLOC_POOL, Allocated, (UINT64)Size, Caller);
   return Status;
 }
 
@@ -249,8 +436,11 @@ TracedFreePages (
   IN UINTN                 Pages
   )
 {
+  UINT64  Caller;
+
+  Caller = BsReturnAddress ();
   mFpCalls++;
-  BsLiveEvent ();
+  BsLiveEvent (BSLIVE_OP_FREE_PAGES, (UINT64)Memory, (UINT64)Pages * EFI_PAGE_SIZE, Caller);
   return mOrigFreePages (Memory, Pages);
 }
 
@@ -261,8 +451,17 @@ TracedFreePool (
   IN VOID  *Buffer
   )
 {
+  UINT64  Caller;
+  UINT64  Address;
+
+  Caller     = BsReturnAddress ();
+  Address    = (UINT64)(UINTN)Buffer;
+  mWinPoolFrees++;
+  mWinLastFreeAddr   = Address;
+  mWinLastFreeCaller = Caller;
+
   mFpoolCalls++;
-  BsLiveEvent ();
+  BsLiveEvent (BSLIVE_OP_FREE_POOL, Address, 0, Caller);
   return mOrigFreePool (Buffer);
 }
 
@@ -278,7 +477,9 @@ TracedGetMemoryMap (
   )
 {
   EFI_STATUS  Status;
+  UINT64      Caller;
 
+  Caller = BsReturnAddress ();
   Status = mOrigGetMemoryMap (
              MemoryMapSize,
              MemoryMap,
@@ -308,7 +509,12 @@ TracedGetMemoryMap (
       (UINT64)(MemoryMapSize != NULL ? *MemoryMapSize : 0)
       );
   }
-  BsLiveEvent ();
+  BsLiveEvent (
+    BSLIVE_OP_GET_MEMORY_MAP,
+    (UINT64)(UINTN)MemoryMap,
+    (UINT64)((MemoryMapSize != NULL) ? *MemoryMapSize : 0),
+    Caller
+    );
   return Status;
 }
 

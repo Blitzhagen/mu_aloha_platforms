@@ -1,0 +1,25 @@
+From bb9e62bc779bc867b56786f469463ae18942e197 Mon Sep 17 00:00:00 2001
+From: Blitzhagen <matritt1985@gmail.com>
+Date: Sat, 28 Nov 2026 04:05:48 +0100
+Subject: [PATCH] v183: reduce arch timer IRQ trace spam
+
+---
+ ArmPkg/Drivers/TimerDxe/TimerDxe.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/ArmPkg/Drivers/TimerDxe/TimerDxe.c b/ArmPkg/Drivers/TimerDxe/TimerDxe.c
+index 85be26c82a..030fc0964a 100644
+--- a/ArmPkg/Drivers/TimerDxe/TimerDxe.c
++++ b/ArmPkg/Drivers/TimerDxe/TimerDxe.c
+@@ -78,7 +78,7 @@ TimerTraceThisIrq (
+   VOID
+   )
+ {
+-  return ((mTimerIrqCount <= 4) || ((mTimerIrqCount % 100) == 0));
++  return ((mTimerIrqCount <= 4) || ((mTimerIrqCount % 65536) == 0));
+ }
+ 
+ /**
+-- 
+2.53.0
+
