@@ -12,6 +12,7 @@
 [Packages]
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
+  ArmPkg/ArmPkg.dec
 
 [LibraryClasses]
   UefiDriverEntryPoint
@@ -23,6 +24,9 @@
   DevicePathLib
   PrintLib
   SerialPortLib
+  ArmLib
+  IoLib
+  PcdLib
 
 [Protocols]
   gEfiBlockIoProtocolGuid
@@ -30,6 +34,10 @@
 
 [Guids]
   gEfiEventExitBootServicesGuid
+
+[Pcd]
+  gArmTokenSpaceGuid.PcdGicDistributorBase
+  gArmTokenSpaceGuid.PcdGicRedistributorsBase
 
 [Depex]
   TRUE

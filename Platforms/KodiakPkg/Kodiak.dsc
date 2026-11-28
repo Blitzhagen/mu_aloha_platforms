@@ -26,7 +26,7 @@
   PACKAGE_NAME                   = $(PLATFORM_NAME)Pkg
   FLASH_DEFINITION               = $(PACKAGE_NAME)/$(PLATFORM_NAME).fdf
   SECURE_BOOT                    = 1
-  USE_PHYSICAL_TIMER             = 0
+  USE_PHYSICAL_TIMER             = 1
 
   USE_SCREEN_FOR_SERIAL_OUTPUT    = 1
   USE_UART_GENI_FOR_SERIAL_OUTPUT = 0

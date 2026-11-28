@@ -15,7 +15,10 @@
 #include <Protocol/DevicePath.h>
 
 #include <Library/BaseLib.h>
+#include <Library/ArmLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/IoLib.h>
+#include <Library/PcdLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
 #include <Library/PrintLib.h>
@@ -42,6 +45,12 @@
 #define BSLIVE_HEARTBEAT      4096
 #define BSLIVE_MAX_FAILLOGS   8
 #define BSLIVE_GMM_PRINT_MOD  16
+
+#define GICD_CTLR_OFFSET              0x000
+#define GICR_WAKER_OFFSET             0x014
+#define GICR_SGI_PPI_FRAME_OFFSET     0x10000
+#define GICR_ISENABLER0_OFFSET        (GICR_SGI_PPI_FRAME_OFFSET + 0x100)
+#define GICR_ISPENDR0_OFFSET          (GICR_SGI_PPI_FRAME_OFFSET + 0x200)
 
 typedef struct {
   BOOLEAN                    InUse;
@@ -88,6 +97,7 @@ STATIC UINT64               mGmmFail;
 STATIC UINT64               mBsEvents;
 STATIC UINT32               mApFailPrints;
 STATIC UINT32               mPoolFailPrints;
+STATIC UINT64               mScanTimerTicks;
 
 STATIC
 EFI_STATUS
@@ -106,6 +116,43 @@ BlkTracePrint (
   IN CONST CHAR8  *Format,
   ...
   );
+
+/*
+  Sparse architectural timer/GIC liveness snapshot.  This deliberately reads
+  both physical and virtual timer registers: v181 switches the DXE timer to
+  the physical timer, but the comparison tells us whether CNTV was the broken
+  half all along.  mScanTimerTicks counts real EFI timer-event deliveries.
+*/
+STATIC
+VOID
+PrintTimerGicState (
+  IN CONST CHAR8  *Tag
+  )
+{
+  UINTN  GicdBase;
+  UINTN  GicrBase;
+
+  GicdBase = (UINTN)PcdGet64 (PcdGicDistributorBase);
+  GicrBase = (UINTN)PcdGet64 (PcdGicRedistributorsBase);
+
+  BlkTracePrint (
+    "%a: ev=%lu tick=%lu frq=%lx pct=%lx vct=%lx pc=%x vc=%x pcv=%lx vcv=%lx gd=%x grw=%x gise=%x gisp=%x\n",
+    Tag,
+    mBsEvents,
+    mScanTimerTicks,
+    (UINT64)ArmReadCntFrq (),
+    ArmReadCntPct (),
+    ArmReadCntvCt (),
+    (UINT32)ArmReadCntpCtl (),
+    (UINT32)ArmReadCntvCtl (),
+    ArmReadCntpCval (),
+    ArmReadCntvCval (),
+    MmioRead32 (GicdBase + GICD_CTLR_OFFSET),
+    MmioRead32 (GicrBase + GICR_WAKER_OFFSET),
+    MmioRead32 (GicrBase + GICR_ISENABLER0_OFFSET),
+    MmioRead32 (GicrBase + GICR_ISPENDR0_OFFSET)
+    );
+}
 
 /*
   Heartbeat is deliberately cheap: one short line per 4096 boot-service
@@ -130,6 +177,7 @@ BsLiveEvent (
       mApFail,
       mPoolFail
       );
+    PrintTimerGicState ("BSTM");
   }
 }
 
@@ -538,6 +586,7 @@ ScanTimerNotify (
   IN VOID       *Context
   )
 {
+  mScanTimerTicks++;
   ScanUsbOrRemovableBlockIo ();
 }
 
@@ -655,6 +704,7 @@ BlkTraceDxeEntry (
 
   BlkTracePrint ("BLKRD-INIT\n");
   InstallBsLivenessProbes ();
+  PrintTimerGicState ("BST0");
   ScanUsbOrRemovableBlockIo ();
 
   Registration = NULL;
